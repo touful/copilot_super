@@ -1,0 +1,13 @@
+.vscode/**
+.github/**
+src/**
+node_modules/**
+copilot-super/**
+.gitignore
+.gitattributes
+tsconfig.json
+esbuild.js
+package-lock.json
+**/*.ts
+**/*.map
+*.vsix

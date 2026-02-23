@@ -1,0 +1,131 @@
+{
+  "name": "copilot-super",
+  "displayName": "Copilot Super - 无限对话模式",
+  "description": "通过 MCP 服务实现与 GitHub Copilot 的多轮交互，在单次计费周期内完成复杂任务",
+  "version": "1.0.0",
+  "publisher": "touful",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.99.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "copilot",
+    "mcp",
+    "ai",
+    "chat",
+    "super"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "copilot-super.openPanel",
+        "title": "打开面板",
+        "category": "Copilot Super",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "copilot-super.sendMessage",
+        "title": "快速发送消息",
+        "category": "Copilot Super",
+        "icon": "$(send)"
+      },
+      {
+        "command": "copilot-super.restartServer",
+        "title": "重启 MCP 服务器",
+        "category": "Copilot Super",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "copilot-super.clearHistory",
+        "title": "清空对话历史",
+        "category": "Copilot Super",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "copilot-super.copyPrompt",
+        "title": "复制前置提示词",
+        "category": "Copilot Super",
+        "icon": "$(copy)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "copilot-super",
+          "title": "Copilot Super",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "copilot-super": [
+        {
+          "type": "webview",
+          "id": "copilot-super.panel",
+          "name": "对话面板",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "copilot-super.clearHistory",
+          "when": "view == copilot-super.panel",
+          "group": "navigation"
+        },
+        {
+          "command": "copilot-super.restartServer",
+          "when": "view == copilot-super.panel",
+          "group": "navigation"        },
+        {
+          "command": "copilot-super.copyPrompt",
+          "when": "view == copilot-super.panel",
+          "group": "navigation"        }
+      ]
+    },
+    "configuration": {
+      "title": "Copilot Super",
+      "properties": {
+        "copilot-super.port": {
+          "type": "number",
+          "default": 55433,
+          "description": "MCP 服务器起始端口号（如被占用将自动递增尝试）"
+        },
+        "copilot-super.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "启动时自动开启 MCP 服务器"
+        },
+        "copilot-super.notifyOnToolCall": {
+          "type": "boolean",
+          "default": true,
+          "description": "收到 Copilot 调用时显示通知"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "lint": "tsc --noEmit",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "^1.99.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.7.0"
+  }
+}
