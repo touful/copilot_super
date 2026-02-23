@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+src/copilot_super/__init__.py
+src/copilot_super/core.py
+src/copilot_super.egg-info/PKG-INFO
+src/copilot_super.egg-info/SOURCES.txt
+src/copilot_super.egg-info/dependency_links.txt
+src/copilot_super.egg-info/top_level.txt
+tests/test_core.py
