@@ -11,6 +11,13 @@ interface PendingRequest {
   timeout?: ReturnType<typeof setTimeout>;
 }
 
+interface RuleTemplate {
+  id: string;
+  name: string;
+  content: string;
+  enabled: boolean;
+}
+
 export class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'copilot-super.panel';
 
@@ -18,6 +25,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private pendingRequest: PendingRequest | null = null;
   private responseQueue: string[] = []; // 存储用户预先发送的消息
   public onGetPrefix?: () => string; // 获取前置提示词的回调
+  public onGetToolName?: () => string; // 获取工具名的回调
 
   private messageHistory: Array<{
     role: 'copilot' | 'user'; 
@@ -26,12 +34,26 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     timestamp: number;
   }> = [];
 
+  // 规则存储 (功能3)
+  private globalRules: string = '';
+  private workspaceRules: string = '';
+  private ruleTemplates: RuleTemplate[] = [];
+
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly context: vscode.ExtensionContext
   ) {
     // 从持久化存储加载对话历史
     this.messageHistory = context.workspaceState.get('copilot-super.history', []);
+    // 从持久化存储加载规则
+    this.globalRules = context.globalState.get<string>('copilot-super.globalRules', '');
+    this.workspaceRules = context.workspaceState.get<string>('copilot-super.workspaceRules', '');
+    // 加载规则模板
+    this.ruleTemplates = context.globalState.get<RuleTemplate[]>('copilot-super.ruleTemplates', []);
+    if (this.ruleTemplates.length === 0) {
+      this.ruleTemplates = this.getDefaultTemplates();
+      context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
+    }
   }
 
   resolveWebviewView(
@@ -64,9 +86,43 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         case 'copyPrompt':
           vscode.commands.executeCommand('copilot-super.copyPrompt');
           break;
+        case 'saveRules':
+          // 功能3: 保存规则
+          this.globalRules = msg.globalRules || '';
+          this.workspaceRules = msg.workspaceRules || '';
+          this.context.globalState.update('copilot-super.globalRules', this.globalRules);
+          this.context.workspaceState.update('copilot-super.workspaceRules', this.workspaceRules);
+          this.postMessage({ type: 'rulesSaved' });
+          break;
+        case 'requestRules':
+          // 功能3: 返回当前规则
+          this.postMessage({
+            type: 'syncRules',
+            globalRules: this.globalRules,
+            workspaceRules: this.workspaceRules,
+          });
+          break;
+        case 'saveTemplate':
+          this.handleSaveTemplate(msg.template as RuleTemplate);
+          break;
+        case 'deleteTemplate':
+          this.handleDeleteTemplate(msg.id as string);
+          break;
+        case 'toggleTemplate':
+          this.handleToggleTemplate(msg.id as string, msg.enabled as boolean);
+          break;
+        case 'requestTemplates':
+          this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
+          break;
         case 'ready':
-          // Webview 就绪，同步历史记录
+          // Webview 就绪，同步历史记录、规则和模板
           this.syncHistory();
+          this.postMessage({
+            type: 'syncRules',
+            globalRules: this.globalRules,
+            workspaceRules: this.workspaceRules,
+          });
+          this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
           break;
       }
     });
@@ -193,7 +249,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     if (this.onGetPrefix) {
       const prefix = this.onGetPrefix();
       if (prefix) {
-        responseText = `${prefix}\n\n${text}`;
+        // 功能3: 拼接全局规则和工作区规则
+        let fullPrefix = prefix;
+        if (this.globalRules.trim()) {
+          fullPrefix = `${fullPrefix}\n\n[全局规则]\n${this.globalRules}`;
+        }
+        if (this.workspaceRules.trim()) {
+          fullPrefix = `${fullPrefix}\n\n[工作区规则]\n${this.workspaceRules}`;
+        }
+        // 拼接启用的规则模板
+        const enabledTemplates = this.ruleTemplates.filter(t => t.enabled).map(t => t.content);
+        if (enabledTemplates.length > 0) {
+          fullPrefix = `${fullPrefix}\n\n[规则模板]\n${enabledTemplates.join('\n')}`;
+        }
+        // 功能1: 添加后缀提醒
+        const toolName = this.onGetToolName?.();
+        const suffix = toolName ? `，每次任务完成之后请调用${toolName}进行汇报。` : '';
+        responseText = `${fullPrefix}\n\n${text}${suffix}`;
       }
     }
 
@@ -211,6 +283,27 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     // 可选：通知 UI 消息已缓存，但这在 UI 乐观更新下可能不需要额外操作
   }
 
+  /** 获取带规则的完整提示词 (功能3) */
+  getFullPrompt(): string {
+    if (!this.onGetPrefix) {
+      return '';
+    }
+    const prefix = this.onGetPrefix();
+    let fullPrompt = prefix;
+    if (this.globalRules.trim()) {
+      fullPrompt = `${fullPrompt}\n\n[全局规则]\n${this.globalRules}`;
+    }
+    if (this.workspaceRules.trim()) {
+      fullPrompt = `${fullPrompt}\n\n[工作区规则]\n${this.workspaceRules}`;
+    }
+    // 拼接启用的规则模板
+    const enabledTemplates = this.ruleTemplates.filter(t => t.enabled).map(t => t.content);
+    if (enabledTemplates.length > 0) {
+      fullPrompt = `${fullPrompt}\n\n[规则模板]\n${enabledTemplates.join('\n')}`;
+    }
+    return fullPrompt;
+  }
+
   /** 持久化对话历史到 workspaceState */
   private saveHistory(): void {
     // 最多保存 200 条，避免存储过大
@@ -219,6 +312,44 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       this.messageHistory = this.messageHistory.slice(-maxEntries);
     }
     this.context.workspaceState.update('copilot-super.history', this.messageHistory);
+  }
+
+  /** 获取默认规则模板 */
+  private getDefaultTemplates(): RuleTemplate[] {
+    return [
+      { id: 'builtin-1', name: '中文回复', content: '请使用中文回复所有内容，包括代码注释。', enabled: false },
+      { id: 'builtin-2', name: '简洁模式', content: '请简洁回复，省略不必要的解释，直接给出结果。', enabled: false },
+      { id: 'builtin-3', name: '详细解释', content: '请详细解释每一步操作的原因和逻辑，确保用户理解。', enabled: false },
+      { id: 'builtin-4', name: '代码审查', content: '请仔细审查代码，关注可能的bug、安全问题、性能瓶颈和最佳实践。', enabled: false },
+    ];
+  }
+
+  /** 保存(新增/编辑)规则模板 */
+  private handleSaveTemplate(template: RuleTemplate): void {
+    const idx = this.ruleTemplates.findIndex(t => t.id === template.id);
+    if (idx >= 0) {
+      this.ruleTemplates[idx] = template;
+    } else {
+      this.ruleTemplates.push(template);
+    }
+    this.context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
+    this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
+  }
+
+  /** 删除规则模板 */
+  private handleDeleteTemplate(id: string): void {
+    this.ruleTemplates = this.ruleTemplates.filter(t => t.id !== id);
+    this.context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
+    this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
+  }
+
+  /** 切换规则模板启用状态 */
+  private handleToggleTemplate(id: string, enabled: boolean): void {
+    const template = this.ruleTemplates.find(t => t.id === id);
+    if (template) {
+      template.enabled = enabled;
+      this.context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
+    }
   }
 
   private postMessage(msg: Record<string, unknown>): void {
@@ -301,6 +432,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .header-icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      opacity: 0.6;
+      transition: opacity 0.15s ease, background 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .header-icon-btn:hover {
+      opacity: 1;
+      background: var(--vscode-toolbar-hoverBackground);
     }
 
     /* ====== 激活按钮 ====== */
@@ -520,47 +669,510 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       font-size: 12px;
       line-height: 1.5;
     }
+
+    /* ====== 功能3: 标签页导航 ====== */
+    .tabs {
+      display: flex;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-sideBar-background);
+      flex-shrink: 0;
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: var(--spacing-md);
+      border: none;
+      background: transparent;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      border-bottom: 2px solid transparent;
+      opacity: 0.7;
+      transition: all 0.2s ease;
+      text-align: center;
+    }
+
+    .tab-btn:hover {
+      opacity: 1;
+    }
+
+    .tab-btn.active {
+      border-bottom-color: var(--vscode-focusBorder);
+      color: var(--vscode-focusBorder);
+      opacity: 1;
+    }
+
+    /* ====== 功能3: 设置页面 ====== */
+    .tab-content {
+      display: none;
+      flex: 1;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .tab-content.active {
+      display: flex;
+    }
+
+    .settings-page {
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      padding: var(--spacing-md);
+      gap: var(--spacing-lg);
+    }
+
+    .settings-page::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .settings-page::-webkit-scrollbar-thumb {
+      background: var(--vscode-scrollbarSlider-background);
+      border-radius: 3px;
+    }
+
+    .setting-group {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+    }
+
+    .setting-group label {
+      font-weight: 600;
+      font-size: 12px;
+      color: var(--vscode-foreground);
+    }
+
+    .setting-group .hint {
+      font-size: 10px;
+      opacity: 0.6;
+      line-height: 1.4;
+    }
+
+    .rule-textarea {
+      width: 100%;
+      min-height: 80px;
+      padding: var(--spacing-sm);
+      border: 1px solid var(--vscode-input-border);
+      border-radius: var(--radius);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font-family: var(--vscode-editor-font-family), monospace;
+      font-size: 11px;
+      resize: vertical;
+      outline: none;
+    }
+
+    .rule-textarea:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .save-rules-btn {
+      padding: var(--spacing-sm) var(--spacing-md);
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      transition: background 0.15s ease;
+      align-self: flex-start;
+    }
+
+    .save-rules-btn:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .status-message {
+      font-size: 11px;
+      padding: var(--spacing-sm);
+      border-radius: var(--radius);
+      background: var(--vscode-testing-iconPassed);
+      color: var(--vscode-sideBar-background);
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .status-message.show {
+      opacity: 1;
+    }
+
+    /* ====== 规则模板库 ====== */
+    .template-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .template-item {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      padding: 6px var(--spacing-sm);
+      border-radius: var(--radius);
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-panel-border);
+    }
+
+    .template-item:hover {
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .template-item input[type="checkbox"] {
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .template-item-info {
+      flex: 1;
+      min-width: 0;
+      cursor: pointer;
+    }
+
+    .template-item-name {
+      font-size: 12px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .template-item-preview {
+      font-size: 10px;
+      opacity: 0.5;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .template-item-actions {
+      display: flex;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+
+    .template-item-actions button {
+      background: transparent;
+      border: none;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-size: 12px;
+      opacity: 0.5;
+      transition: opacity 0.15s;
+    }
+
+    .template-item-actions button:hover {
+      opacity: 1;
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+
+    .add-template-btn {
+      width: 100%;
+      padding: var(--spacing-sm);
+      border: 1px dashed var(--vscode-panel-border);
+      border-radius: var(--radius);
+      background: transparent;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      font-size: 12px;
+      opacity: 0.6;
+      transition: all 0.15s;
+      margin-top: var(--spacing-sm);
+    }
+
+    .add-template-btn:hover {
+      opacity: 1;
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .template-dialog-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: var(--spacing-lg);
+    }
+
+    .template-dialog-overlay.show {
+      display: flex;
+    }
+
+    .template-dialog {
+      width: 100%;
+      max-width: 400px;
+      background: var(--vscode-sideBar-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: var(--radius);
+      padding: var(--spacing-lg);
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+    }
+
+    .template-dialog h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .template-dialog input,
+    .template-dialog textarea {
+      width: 100%;
+      padding: var(--spacing-sm);
+      border: 1px solid var(--vscode-input-border);
+      border-radius: var(--radius);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      font-family: var(--vscode-font-family);
+      font-size: 12px;
+      outline: none;
+    }
+
+    .template-dialog input:focus,
+    .template-dialog textarea:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+
+    .template-dialog textarea {
+      min-height: 80px;
+      resize: vertical;
+      font-family: var(--vscode-editor-font-family), monospace;
+      font-size: 11px;
+    }
+
+    .dialog-actions {
+      display: flex;
+      gap: var(--spacing-sm);
+      justify-content: flex-end;
+    }
+
+    .dialog-actions button {
+      padding: var(--spacing-xs) var(--spacing-md);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .dialog-save-btn {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+
+    .dialog-save-btn:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
+    .dialog-cancel-btn {
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+
+    .dialog-cancel-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+
+    /* ====== 功能4: 撤回功能 ====== */
+    .pending-send-area {
+      padding: var(--spacing-md);
+      background: var(--vscode-editorWarning-background);
+      border: 1px solid var(--vscode-editorWarning-border);
+      border-radius: var(--radius);
+      margin-bottom: var(--spacing-md);
+      display: none;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+    }
+
+    .pending-send-area.show {
+      display: flex;
+    }
+
+    .pending-send-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: var(--spacing-sm);
+    }
+
+    .pending-send-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--vscode-editorWarning-foreground);
+    }
+
+    .pending-countdown {
+      font-size: 11px;
+      color: var(--vscode-editorWarning-foreground);
+      min-width: 30px;
+      text-align: right;
+    }
+
+    .pending-send-text {
+      font-size: 11px;
+      color: var(--vscode-editorWarning-foreground);
+      padding: var(--spacing-sm);
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 3px;
+      word-break: break-word;
+      max-height: 60px;
+      overflow-y: auto;
+      line-height: 1.4;
+    }
+
+    .pending-actions {
+      display: flex;
+      gap: var(--spacing-sm);
+      justify-self: flex-end;
+    }
+
+    .pending-send-btn, .pending-cancel-btn {
+      flex: 1;
+      padding: 4px 8px;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 500;
+      transition: all 0.15s ease;
+    }
+
+    .pending-send-btn {
+      background: var(--vscode-testing-iconPassed);
+      color: var(--vscode-sideBar-background);
+    }
+
+    .pending-send-btn:hover {
+      opacity: 0.9;
+    }
+
+    .pending-cancel-btn {
+      background: var(--vscode-errorForeground);
+      color: var(--vscode-sideBar-background);
+    }
+
+    .pending-cancel-btn:hover {
+      opacity: 0.9;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="status-dot" id="statusDot"></div>
     <span class="header-text" id="statusText">MCP 服务就绪</span>
+    <button class="header-icon-btn" id="clearBtn" title="清除对话">🗑️</button>
   </div>
 
-  <button class="activate-btn" id="activateBtn">
-    <span class="icon">📋</span>
-    复制前置提示词 (激活)
-  </button>
+  <!-- 功能3: 标签页导航 -->
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="chat" id="chatTabBtn">💬 对话</button>
+    <button class="tab-btn" data-tab="settings" id="settingsTabBtn">⚙️ 设置</button>
+  </div>
 
-  <div class="messages" id="messages">
-    <div class="empty-state" id="emptyState">
-      <div class="icon">📡</div>
-      <div class="title">Copilot Super</div>
-      <div class="desc">
-        MCP 服务已就绪，等待 Copilot 连接<br><br>
-        <strong>使用方法:</strong><br>
-        1. 在 Copilot Chat 中发起对话<br>
-        2. Copilot 会自动调用 MCP 工具<br>
-        3. 在此面板输入指令继续交互<br><br>
-        <em>Shift+Enter 换行 · Enter 发送</em>
+  <!-- 对话页面 -->
+  <div class="tab-content active" id="chatTab">
+    <button class="activate-btn" id="activateBtn">
+      <span class="icon">📋</span>
+      复制前置提示词 (激活)
+    </button>
+
+    <div class="messages" id="messages">
+      <div class="empty-state" id="emptyState">
+        <div class="icon">📡</div>
+        <div class="title">Copilot Super</div>
+        <div class="desc">
+          MCP 服务已就绪，等待 Copilot 连接<br><br>
+          <strong>使用方法:</strong><br>
+          1. 在 Copilot Chat 中发起对话<br>
+          2. Copilot 会自动调用 MCP 工具<br>
+          3. 在此面板输入指令继续交互<br><br>
+          <em>Shift+Enter 换行 · Enter 发送</em>
+        </div>
+      </div>
+    </div>
+
+    <div class="choices" id="choices"></div>
+
+    <!-- 功能4: 待发送消息提示区 -->
+    <div class="pending-send-area" id="pendingSendArea">
+      <div class="pending-send-header">
+        <div class="pending-send-title">⏱️ 消息即将发送，可撤回</div>
+        <div class="pending-countdown" id="pendingCountdown">5秒</div>
+      </div>
+      <div class="pending-send-text" id="pendingSendText"></div>
+      <div class="pending-actions">
+        <button class="pending-send-btn" id="pendingSendNowBtn">立即发送</button>
+        <button class="pending-cancel-btn" id="pendingCancelBtn">撤回</button>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-wrapper">
+        <textarea
+          class="input-field"
+          id="inputField"
+          placeholder="输入你的指令..."
+          rows="1"
+        ></textarea>
+        <button class="send-btn" id="sendBtn" disabled>发送</button>
+      </div>
+      <div class="hint-text">Enter 发送 · Shift+Enter 换行</div>
+    </div>
+  </div>
+
+  <!-- 设置页面 -->
+  <div class="tab-content" id="settingsTab">
+    <div class="settings-page" id="settingsPage">
+      <div class="setting-group">
+        <label>全局规则</label>
+        <div class="hint">在所有工作区适用的规则，会添加到提示词前缀之后</div>
+        <textarea 
+          class="rule-textarea" 
+          id="globalRulesInput" 
+          placeholder="输入全局规则，每条规则占一行或使用段落分隔..."
+        ></textarea>
+      </div>
+
+      <div class="setting-group">
+        <label>工作区规则</label>
+        <div class="hint">仅在当前工作区适用的规则，会添加到全局规则之后</div>
+        <textarea 
+          class="rule-textarea" 
+          id="workspaceRulesInput" 
+          placeholder="输入工作区规则，每条规则占一行或使用段落分隔..."
+        ></textarea>
+      </div>
+
+      <button class="save-rules-btn" id="saveRulesBtn">保存规则</button>
+      <div class="status-message" id="rulesSavedMsg">规则已保存！</div>
+
+      <div class="setting-group">
+        <label>规则模板库</label>
+        <div class="hint">勾选的模板会自动拼接到前置提示词中</div>
+        <div class="template-list" id="templateList"></div>
+        <button class="add-template-btn" id="addTemplateBtn">+ 添加自定义模板</button>
       </div>
     </div>
   </div>
 
-  <div class="choices" id="choices"></div>
-
-  <div class="input-area">
-    <div class="input-wrapper">
-      <textarea
-        class="input-field"
-        id="inputField"
-        placeholder="输入你的指令..."
-        rows="1"
-      ></textarea>
-      <button class="send-btn" id="sendBtn" disabled>发送</button>
+  <!-- 模板编辑弹窗 -->
+  <div class="template-dialog-overlay" id="templateDialogOverlay">
+    <div class="template-dialog">
+      <h3 id="templateDialogTitle">添加模板</h3>
+      <input type="text" id="templateNameInput" placeholder="模板名称...">
+      <textarea id="templateContentInput" placeholder="模板内容，如：请使用中文回复所有内容..."></textarea>
+      <div class="dialog-actions">
+        <button class="dialog-cancel-btn" id="dialogCancelBtn">取消</button>
+        <button class="dialog-save-btn" id="dialogSaveBtn">保存</button>
+      </div>
     </div>
-    <div class="hint-text">Enter 发送 · Shift+Enter 换行</div>
   </div>
 
   <script>
@@ -577,7 +1189,42 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const statusText = document.getElementById('statusText');
       const activateBtn = document.getElementById('activateBtn');
 
+      // 功能3: 标签页和规则管理引用
+      const chatTabBtn = document.getElementById('chatTabBtn');
+      const settingsTabBtn = document.getElementById('settingsTabBtn');
+      const chatTab = document.getElementById('chatTab');
+      const settingsTab = document.getElementById('settingsTab');
+      const globalRulesInput = document.getElementById('globalRulesInput');
+      const workspaceRulesInput = document.getElementById('workspaceRulesInput');
+      const saveRulesBtn = document.getElementById('saveRulesBtn');
+      const rulesSavedMsg = document.getElementById('rulesSavedMsg');
+
+      // 规则模板库元素引用
+      const templateList = document.getElementById('templateList');
+      const addTemplateBtn = document.getElementById('addTemplateBtn');
+      const templateDialogOverlay = document.getElementById('templateDialogOverlay');
+      const templateDialogTitle = document.getElementById('templateDialogTitle');
+      const templateNameInput = document.getElementById('templateNameInput');
+      const templateContentInput = document.getElementById('templateContentInput');
+      const dialogSaveBtn = document.getElementById('dialogSaveBtn');
+      const dialogCancelBtn = document.getElementById('dialogCancelBtn');
+
+      var currentTemplates = [];
+      var editingTemplateId = null; // null = 新增, string = 编辑
+
+      // 功能4: 撤回功能引用
+      const pendingSendArea = document.getElementById('pendingSendArea');
+      const pendingCountdown = document.getElementById('pendingCountdown');
+      const pendingSendText = document.getElementById('pendingSendText');
+      const pendingSendNowBtn = document.getElementById('pendingSendNowBtn');
+      const pendingCancelBtn = document.getElementById('pendingCancelBtn');
+      const clearBtn = document.getElementById('clearBtn');
+
       let isWaiting = false; // 是否正在等待用户输入以回复当前 Copilot 请求
+      
+      // 功能4: 待发送消息的状态
+      let pendingMessage = null; // { text: string, timeout: NodeJS.Timeout }
+      let pendingCountdownInterval = null;
 
       // ====== 消息处理 ======
       window.addEventListener('message', (event) => {
@@ -598,6 +1245,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             break;
           case 'syncHistory':
             syncHistory(msg.history);
+            break;
+          case 'syncRules':
+            // 功能3: 同步规则
+            globalRulesInput.value = msg.globalRules || '';
+            workspaceRulesInput.value = msg.workspaceRules || '';
+            break;
+          case 'rulesSaved':
+            // 功能3: 显示规则已保存的提示
+            showStatusMessage('规则已保存！');
+            break;
+          case 'syncTemplates':
+            // 同步规则模板
+            currentTemplates = msg.templates || [];
+            renderTemplateList();
             break;
         }
       });
@@ -722,27 +1383,157 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
 
       // ====== 发送消息 ======
+      /** 功能4: 实现 5 秒延迟发送 */
       function sendMessage() {
         const text = inputField.value.trim();
-        if (!text) return; // 移除 isWaiting 检查
+        if (!text) return;
 
+        // 先显示消息在 UI 中（乐观更新）
         addMessage('user', '', text, Date.now());
-        vscode.postMessage({ type: 'userResponse', text: text });
+        
+        // 取消任何待发送的消息
+        if (pendingMessage) {
+          clearTimeout(pendingMessage.timeout);
+          clearInterval(pendingCountdownInterval);
+        }
+
+        // 清空输入框
         inputField.value = '';
         adjustHeight();
         updateButtonState();
-        
-        // 如果正在等待，发送消息也会清除选项
+
+        // 功能4: 设置 5 秒延迟发送
+        let remainingSeconds = 5;
+        pendingSendText.textContent = text.substring(0, 100) + (text.length > 100 ? '...' : '');
+        pendingCountdown.textContent = remainingSeconds + '秒';
+        pendingSendArea.classList.add('show');
+
+        // 倒数计时
+        pendingCountdownInterval = setInterval(() => {
+          remainingSeconds--;
+          pendingCountdown.textContent = remainingSeconds + '秒';
+          if (remainingSeconds <= 0) {
+            clearInterval(pendingCountdownInterval);
+          }
+        }, 1000);
+
+        // 5 秒后自动发送
+        const timeout = setTimeout(() => {
+          executeSend(text);
+          clearPendingUI();
+        }, 5000);
+
+        // 存储待发送消息
+        pendingMessage = { text, timeout };
+
+        // 如果正在等待，清除选项
         if (isWaiting) {
-             choicesEl.innerHTML = '';
+          choicesEl.innerHTML = '';
+        }
+      }
+
+      /** 功能4: 立即发送待发送的消息 */
+      function executeSend(text) {
+        if (pendingMessage) {
+          clearTimeout(pendingMessage.timeout);
+          clearInterval(pendingCountdownInterval);
+        }
+        vscode.postMessage({ type: 'userResponse', text: text });
+        pendingMessage = null;
+      }
+
+      /** 功能4: 清空待发送 UI */
+      function clearPendingUI() {
+        pendingSendArea.classList.remove('show');
+        if (pendingCountdownInterval) {
+          clearInterval(pendingCountdownInterval);
+        }
+      }
+
+      /** 功能4: 撤回消息 */
+      function cancelPendingMessage() {
+        if (pendingMessage) {
+          clearTimeout(pendingMessage.timeout);
+          clearInterval(pendingCountdownInterval);
+          pendingMessage = null;
+          clearPendingUI();
+          // 移除乐观更新展示的用户消息
+          var allUserMsgs = messagesEl.querySelectorAll('.message.user');
+          if (allUserMsgs.length > 0) {
+            allUserMsgs[allUserMsgs.length - 1].remove();
+          }
+          // 如果没有消息了，显示空状态
+          if (!messagesEl.querySelector('.message')) {
+            if (emptyStateEl) emptyStateEl.style.display = '';
+          }
+          showStatusMessage('消息已撤回');
         }
       }
 
       sendBtn.addEventListener('click', sendMessage);
 
+      // 功能4: 立即发送按钮
+      pendingSendNowBtn.addEventListener('click', () => {
+        if (pendingMessage) {
+          executeSend(pendingMessage.text);
+          clearPendingUI();
+        }
+      });
+
+      // 功能4: 撤回按钮
+      pendingCancelBtn.addEventListener('click', () => {
+        cancelPendingMessage();
+      });
+
+      // 功能5: 清除对话按钮
+      clearBtn.addEventListener('click', () => {
+        cancelPendingMessage();
+        vscode.postMessage({ type: 'clearHistory' });
+      });
+
       activateBtn.addEventListener('click', () => {
         vscode.postMessage({ type: 'copyPrompt' });
       });
+
+      // 功能3: 标签页切换
+      function switchTab(tabName) {
+        if (tabName === 'chat') {
+          chatTab.classList.add('active');
+          settingsTab.classList.remove('active');
+          chatTabBtn.classList.add('active');
+          settingsTabBtn.classList.remove('active');
+        } else if (tabName === 'settings') {
+          settingsTab.classList.add('active');
+          chatTab.classList.remove('active');
+          settingsTabBtn.classList.add('active');
+          chatTabBtn.classList.remove('active');
+          // 请求同步规则
+          vscode.postMessage({ type: 'requestRules' });
+        }
+      }
+
+      chatTabBtn.addEventListener('click', () => switchTab('chat'));
+      settingsTabBtn.addEventListener('click', () => switchTab('settings'));
+
+      // 功能3: 保存规则
+      saveRulesBtn.addEventListener('click', () => {
+        const globalRules = globalRulesInput.value;
+        const workspaceRules = workspaceRulesInput.value;
+        vscode.postMessage({
+          type: 'saveRules',
+          globalRules: globalRules,
+          workspaceRules: workspaceRules,
+        });
+      });
+
+      // 功能3: 显示状态消息
+      function showStatusMessage(message) {
+        rulesSavedMsg.textContent = message;
+        rulesSavedMsg.classList.add('show');
+        setTimeout(() => {
+          rulesSavedMsg.classList.remove('show');
+        }, 2000);
+      }
 
       inputField.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -774,34 +1565,189 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         return div.innerHTML;
       }
 
-      /** 轻量级 Markdown 渲染（支持加粗、斜体、行内代码、代码块、列表、标题） */
+      /** 轻量级 Markdown 渲染（支持加粗、斜体、行内代码、代码块、列表、标题、编码处理） */
       function renderMarkdown(text) {
         if (!text) return '';
-        // 先对 HTML 转义
+        
+        // 第一步：处理各种编码和转义序列
+        // 统一处理 \\uXXXX, \\xXX, \\n, \\r, \\t, \\\\ 等转义
+        function decodeEscape(match, seq) {
+          if (seq === 'n') return String.fromCharCode(10);
+          if (seq === 'r') return String.fromCharCode(13);
+          if (seq === 't') return String.fromCharCode(9);
+          if (seq.charAt(0) === 'u') {
+            try { return String.fromCharCode(parseInt(seq.substring(1), 16)); }
+            catch(e) { return match; }
+          }
+          if (seq.charAt(0) === 'x') {
+            try { return String.fromCharCode(parseInt(seq.substring(1), 16)); }
+            catch(e) { return match; }
+          }
+          return String.fromCharCode(92);
+        }
+        // 两次处理：先解码双重转义，再解码单重转义
+        text = text.replace(/\\\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|n|r|t|\\\\)/g, decodeEscape);
+        text = text.replace(/\\\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|n|r|t|\\\\)/g, decodeEscape);
+        
+        // 处理 URL 编码的连续字节 (%XX%XX... → 实际字符)
+        text = text.replace(/(?:%[0-9a-fA-F]{2}){2,}/g, function(match) {
+          try { return decodeURIComponent(match); }
+          catch(e) { return match; }
+        });
+        
+        // 处理 HTML 数字实体 (&#xXXXX; 或 &#NNNN;)
+        text = text.replace(/&#x([0-9a-fA-F]+);/g, function(match, code) {
+          try { return String.fromCodePoint(parseInt(code, 16)); }
+          catch(e) { return match; }
+        });
+        text = text.replace(/&#(\\d+);/g, function(match, code) {
+          try { return String.fromCodePoint(parseInt(code, 10)); }
+          catch(e) { return match; }
+        });
+        
+        // 第二步：对 HTML 转义（防止 XSS）
         let html = escapeHtml(text);
-        // 代码块
-        const bt3 = String.fromCharCode(96,96,96);
-        const bt1re = new RegExp(String.fromCharCode(96) + '([^' + String.fromCharCode(96) + ']+)' + String.fromCharCode(96), 'g');
-        const bt3re = new RegExp(bt3 + '(\\\\w*)\\n([\\\\s\\\\S]*?)' + bt3, 'g');
-        html = html.replace(bt3re,
-          '<pre style="background:var(--vscode-textCodeBlock-background);padding:8px;border-radius:4px;overflow-x:auto;"><code>$2</code></pre>');
+        
+        // 第三步：处理 Markdown 语法
+        // 代码块 - 支持可选的语言标识符
+        const backtick = String.fromCharCode(96);
+        const tripleBacktick = backtick + backtick + backtick;
+        const codeBlockRegex = new RegExp(tripleBacktick + '([\\s\\S]*?)' + tripleBacktick, 'g');
+        html = html.replace(codeBlockRegex, 
+          '<pre style="background:var(--vscode-textCodeBlock-background);padding:8px;border-radius:4px;overflow-x:auto;margin:4px 0;"><code>$1</code></pre>');
+        
         // 行内代码
-        html = html.replace(bt1re,
+        const inlineCodeRegex = new RegExp(backtick + '([^' + backtick + ']+)' + backtick, 'g');
+        html = html.replace(inlineCodeRegex,
           '<code style="background:var(--vscode-textCodeBlock-background);padding:1px 4px;border-radius:3px;">$1</code>');
-        // 加粗 **...**
+        
+        // 加粗 (**, __)
         html = html.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
-        // 斜体 *...*
-        html = html.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
-        // 标题
+        html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+        
+        // 斜体 (*...* 或 _.._) - 避免与加粗冲突
+        html = html.replace(/(?<!\\*)\\*(.+?)\\*(?!\\*)/g, '<em>$1</em>');
+        html = html.replace(/(?<!_)_(.+?)_(?!_)/g, '<em>$1</em>');
+        
+        // 标题 (# ## ###)
         html = html.replace(/^### (.+)$/gm, '<strong style="font-size:1.1em;">$1</strong>');
         html = html.replace(/^## (.+)$/gm, '<strong style="font-size:1.2em;">$1</strong>');
         html = html.replace(/^# (.+)$/gm, '<strong style="font-size:1.3em;">$1</strong>');
-        // 无序列表
-        html = html.replace(/^[*\\-] (.+)$/gm, '• $1');
-        // 换行
-        html = html.replace(/\\n/g, '<br>');
+        
+        // 引用块 (> ...> 或 >> ...)
+        html = html.replace(/^&gt;\\s*(.+)$/gm, '<blockquote style="border-left:3px solid var(--vscode-focusBorder);padding-left:8px;opacity:0.8;">$1</blockquote>');
+        
+        // 无序列表 (- 或 * 或 +)
+        html = html.replace(/^[\\s]*[-*+] (.+)$/gm, '&nbsp;&nbsp;• $1');
+        
+        // 有序列表 (1. 2. etc)
+        html = html.replace(/^[\\s]*(\\d+)\\.\\s+(.+)$/gm, '&nbsp;&nbsp;$1. $2');
+        
+        // 分割线 (---, ***, ___)
+        html = html.replace(/^[\\s]*(---|___|\\*\\*\\*)\\s*$/gm, '<hr style="border:none;border-top:1px solid var(--vscode-panel-border);margin:8px 0;">');
+        
+        // 第四步：处理换行符
+        html = html.replace(/\\r\\n|\\r|\\n/g, '<br>');
+        
         return html;
       }
+
+      // ====== 规则模板库管理 ======
+      function renderTemplateList() {
+        templateList.innerHTML = '';
+        currentTemplates.forEach(function(tpl) {
+          var item = document.createElement('div');
+          item.className = 'template-item';
+
+          var cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = tpl.enabled;
+          cb.addEventListener('change', function() {
+            vscode.postMessage({ type: 'toggleTemplate', id: tpl.id, enabled: cb.checked });
+          });
+
+          var info = document.createElement('div');
+          info.className = 'template-item-info';
+          info.innerHTML = '<div class="template-item-name">' + escapeHtml(tpl.name) + '</div>' +
+            '<div class="template-item-preview">' + escapeHtml(tpl.content.substring(0, 50)) + '</div>';
+
+          var actions = document.createElement('div');
+          actions.className = 'template-item-actions';
+
+          var editBtn = document.createElement('button');
+          editBtn.textContent = '\u270f\ufe0f';
+          editBtn.title = '\u7f16\u8f91';
+          editBtn.addEventListener('click', function() {
+            openTemplateDialog(tpl);
+          });
+
+          var delBtn = document.createElement('button');
+          delBtn.textContent = '\ud83d\uddd1\ufe0f';
+          delBtn.title = '\u5220\u9664';
+          delBtn.addEventListener('click', function() {
+            vscode.postMessage({ type: 'deleteTemplate', id: tpl.id });
+          });
+
+          actions.appendChild(editBtn);
+          actions.appendChild(delBtn);
+
+          item.appendChild(cb);
+          item.appendChild(info);
+          item.appendChild(actions);
+          templateList.appendChild(item);
+        });
+      }
+
+      function openTemplateDialog(tpl) {
+        if (tpl) {
+          editingTemplateId = tpl.id;
+          templateDialogTitle.textContent = '\u7f16\u8f91\u6a21\u677f';
+          templateNameInput.value = tpl.name;
+          templateContentInput.value = tpl.content;
+        } else {
+          editingTemplateId = null;
+          templateDialogTitle.textContent = '\u6dfb\u52a0\u6a21\u677f';
+          templateNameInput.value = '';
+          templateContentInput.value = '';
+        }
+        templateDialogOverlay.classList.add('show');
+        templateNameInput.focus();
+      }
+
+      function closeTemplateDialog() {
+        templateDialogOverlay.classList.remove('show');
+        editingTemplateId = null;
+      }
+
+      addTemplateBtn.addEventListener('click', function() {
+        openTemplateDialog(null);
+      });
+
+      dialogCancelBtn.addEventListener('click', closeTemplateDialog);
+
+      templateDialogOverlay.addEventListener('click', function(e) {
+        if (e.target === templateDialogOverlay) closeTemplateDialog();
+      });
+
+      dialogSaveBtn.addEventListener('click', function() {
+        var name = templateNameInput.value.trim();
+        var content = templateContentInput.value.trim();
+        if (!name || !content) return;
+
+        var template = {
+          id: editingTemplateId || ('custom-' + Date.now()),
+          name: name,
+          content: content,
+          enabled: false
+        };
+        // \u7f16\u8f91\u65f6\u4fdd\u7559\u539f\u6765\u7684\u542f\u7528\u72b6\u6001
+        if (editingTemplateId) {
+          var existing = currentTemplates.find(function(t) { return t.id === editingTemplateId; });
+          if (existing) template.enabled = existing.enabled;
+        }
+        vscode.postMessage({ type: 'saveTemplate', template: template });
+        closeTemplateDialog();
+      });
 
       // 通知 extension 就绪
       vscode.postMessage({ type: 'ready' });

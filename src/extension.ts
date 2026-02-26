@@ -38,6 +38,10 @@ export async function activate(context: vscode.ExtensionContext) {
     const toolName = getMcpToolName(actualPort);
     return readPromptFile('prefix.txt', toolName);
   };
+  sidebarProvider.onGetToolName = () => {
+    const actualPort = mcpServer?.getActualPort() || vscode.workspace.getConfiguration('copilot-super').get<number>('port', 55433);
+    return getMcpToolName(actualPort);
+  };
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       SidebarProvider.viewId,
@@ -75,12 +79,21 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('copilot-super.copyPrompt', async () => {
-      const actualPort = mcpServer?.getActualPort() || vscode.workspace.getConfiguration('copilot-super').get<number>('port', 55433);
-      const toolName = getMcpToolName(actualPort);
-      const promptText = readPromptFile('prefix.txt', toolName);
-      await vscode.env.clipboard.writeText(promptText);
-      vscode.window.showInformationMessage('Copilot Super: 前置提示词已复制到剪贴板');
-      log(`Prompt copied to clipboard (tool: ${toolName})`);
+      // 功能3: 使用 sidebarProvider.getFullPrompt() 获取包含规则的完整提示词
+      const fullPrompt = sidebarProvider.getFullPrompt();
+      if (fullPrompt) {
+        await vscode.env.clipboard.writeText(fullPrompt);
+        vscode.window.showInformationMessage('Copilot Super: 前置提示词（包含规则）已复制到剪贴板');
+        log('Full prompt with rules copied to clipboard');
+      } else {
+        // 如果没有设置规则，使用默认行为
+        const actualPort = mcpServer?.getActualPort() || vscode.workspace.getConfiguration('copilot-super').get<number>('port', 55433);
+        const toolName = getMcpToolName(actualPort);
+        const promptText = readPromptFile('prefix.txt', toolName);
+        await vscode.env.clipboard.writeText(promptText);
+        vscode.window.showInformationMessage('Copilot Super: 前置提示词已复制到剪贴板');
+        log(`Prompt copied to clipboard (tool: ${toolName})`);
+      }
     })
   );
 

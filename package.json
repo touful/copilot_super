@@ -2,7 +2,7 @@
   "name": "copilot-super",
   "displayName": "Copilot Super - 无限对话模式",
   "description": "通过 MCP 服务实现与 GitHub Copilot 的多轮交互，在单次计费周期内完成复杂任务",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "touful",
   "license": "MIT",
   "engines": {
