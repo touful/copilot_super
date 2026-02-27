@@ -23,7 +23,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   private webviewView?: vscode.WebviewView;
   private pendingRequest: PendingRequest | null = null;
-  private responseQueue: string[] = []; // 存储用户预先发送的消息
+  private responseQueue: Array<{original: string; full: string}> = []; // 存储用户预先发送的消息（含原始文本和完整文本）
   public onGetPrefix?: () => string; // 获取前置提示词的回调
   public onGetToolName?: () => string; // 获取工具名的回调
 
@@ -122,8 +122,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           // 返回当前设置项
           this.syncSettings();
           break;
+        case 'requestQueueInfo':
+          // 返回队列状态
+          this.syncQueueInfo();
+          break;
+        case 'recallLastQueued':
+          // 撤回队列中最后一条消息
+          this.handleRecallLastQueued();
+          break;
         case 'ready':
-          // Webview 就绪，同步历史记录、规则、模板和设置
+          // Webview 就绪，同步历史记录、规则、模板、设置和队列
           this.syncHistory();
           this.postMessage({
             type: 'syncRules',
@@ -132,6 +140,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           });
           this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
           this.syncSettings();
+          this.syncQueueInfo();
           break;
       }
     });
@@ -162,7 +171,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     // 1. 如果有预先排队的用户消息，立即使用并返回，不进入等待状态
     if (this.responseQueue.length > 0) {
-      const response = this.responseQueue.shift()!;
+      const queued = this.responseQueue.shift()!;
+      const response = queued.full;
       
       // 更新 Webview 显示 (让用户看到 Copilot 刚才发了什么，虽然已经自动回复了)
       this.postMessage({
@@ -175,6 +185,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         // 标记为已快速响应，Webview 可以选择不进入 Input 锁定状态
         autoResponded: true 
       });
+
+      // 队列被消费，同步队列状态到 Webview
+      this.syncQueueInfo();
 
       return response;
     }
@@ -293,8 +306,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     // 2. 如果没有请求，存入队列，等待下次 Copilot 调用时使用
-    this.responseQueue.push(responseText);
-    // 可选：通知 UI 消息已缓存，但这在 UI 乐观更新下可能不需要额外操作
+    this.responseQueue.push({ original: text, full: responseText });
+    // 通知 Webview 更新队列状态
+    this.syncQueueInfo();
   }
 
   /** 获取带规则的完整提示词 (功能3) */
@@ -383,6 +397,37 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       notifyOnToolCall: config.get<boolean>('notifyOnToolCall', true),
       soundOnToolCall: config.get<boolean>('soundOnToolCall', false),
       showPluginNotifications: config.get<boolean>('showPluginNotifications', true),
+    });
+  }
+
+  /** 同步队列信息到 Webview，让前端知道还有多少条排队的消息 */
+  private syncQueueInfo(): void {
+    this.postMessage({
+      type: 'syncQueue',
+      count: this.responseQueue.length,
+      items: this.responseQueue.map(q => q.original),
+    });
+  }
+
+  /** 撤回队列中最后一条未发送的消息，返回原始文本给 Webview */
+  private handleRecallLastQueued(): void {
+    if (this.responseQueue.length === 0) {
+      this.postMessage({ type: 'queueRecalled', text: null, count: 0 });
+      return;
+    }
+    const recalled = this.responseQueue.pop()!;
+    // 同时从消息历史中移除最后一条用户消息（与队列对应）
+    for (let i = this.messageHistory.length - 1; i >= 0; i--) {
+      if (this.messageHistory[i].role === 'user') {
+        this.messageHistory.splice(i, 1);
+        break;
+      }
+    }
+    this.saveHistory();
+    this.postMessage({
+      type: 'queueRecalled',
+      text: recalled.original,
+      count: this.responseQueue.length,
     });
   }
 
@@ -1128,12 +1173,84 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     .pending-cancel-btn:hover {
       opacity: 0.9;
     }
+
+    /* ====== 自定义右键菜单 ====== */
+    .context-menu {
+      display: none;
+      position: fixed;
+      z-index: 200;
+      background: var(--vscode-menu-background, var(--vscode-editor-background));
+      border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+      border-radius: 6px;
+      padding: 4px 0;
+      min-width: 140px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+    .context-menu.show {
+      display: block;
+    }
+
+    .context-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--vscode-menu-foreground, var(--vscode-foreground));
+      transition: background 0.1s;
+      white-space: nowrap;
+    }
+
+    .context-menu-item:hover {
+      background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+      color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+    }
+
+    .context-menu-item.disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    .context-menu-item.disabled:hover {
+      background: transparent;
+    }
+
+    .context-menu-item .icon {
+      font-size: 14px;
+      width: 18px;
+      text-align: center;
+    }
+
+    .context-menu-separator {
+      height: 1px;
+      background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+      margin: 4px 8px;
+    }
+
+    /* ====== 队列状态指示 ====== */
+    .queue-badge {
+      display: none;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 10px;
+      flex-shrink: 0;
+    }
+
+    .queue-badge.show {
+      display: inline-block;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="status-dot" id="statusDot"></div>
     <span class="header-text" id="statusText">MCP 服务就绪</span>
+    <span class="queue-badge" id="queueBadge" title="排队中的消息数">0</span>
     <button class="header-icon-btn" id="clearBtn" title="清除对话">🗑️</button>
   </div>
 
@@ -1192,6 +1309,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         <button class="send-btn" id="sendBtn" disabled>发送</button>
       </div>
       <div class="hint-text">Enter 发送 · Shift+Enter 换行</div>
+      <div class="status-message" id="chatStatusMsg"></div>
     </div>
   </div>
 
@@ -1286,6 +1404,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
+  <!-- 自定义右键菜单 -->
+  <div class="context-menu" id="contextMenu">
+    <div class="context-menu-item" id="ctxCopy">
+      <span class="icon">📋</span>
+      <span>复制</span>
+    </div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" id="ctxRecallQueued">
+      <span class="icon">↩️</span>
+      <span>撤回排队消息</span>
+    </div>
+  </div>
+
   <script>
     (function() {
       // @ts-ignore
@@ -1340,7 +1471,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const pendingCancelBtn = document.getElementById('pendingCancelBtn');
       const clearBtn = document.getElementById('clearBtn');
 
+      // 自定义右键菜单元素引用
+      const contextMenu = document.getElementById('contextMenu');
+      const ctxCopy = document.getElementById('ctxCopy');
+      const ctxRecallQueued = document.getElementById('ctxRecallQueued');
+      const queueBadge = document.getElementById('queueBadge');
+      const chatStatusMsg = document.getElementById('chatStatusMsg');
+
       let isWaiting = false; // 是否正在等待用户输入以回复当前 Copilot 请求
+      let queueCount = 0; // 队列中待消费的消息数量
       
       // 功能4: 待发送消息的状态
       let pendingMessage = null; // { text: string, timeout: NodeJS.Timeout }
@@ -1393,6 +1532,34 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           case 'playSound':
             // 播放提示音效
             playNotificationSound();
+            break;
+          case 'syncQueue':
+            // 同步队列信息
+            queueCount = msg.count || 0;
+            updateQueueBadge();
+            break;
+          case 'queueRecalled':
+            // 队列撤回结果
+            queueCount = msg.count || 0;
+            updateQueueBadge();
+            if (msg.text) {
+              // 将撤回的文本回退到输入框中
+              inputField.value = msg.text;
+              adjustHeight();
+              updateButtonState();
+              inputField.focus();
+              // 移除 UI 中最后一条用户消息
+              var allUserMsgs = messagesEl.querySelectorAll('.message.user');
+              if (allUserMsgs.length > 0) {
+                allUserMsgs[allUserMsgs.length - 1].remove();
+              }
+              if (!messagesEl.querySelector('.message')) {
+                if (emptyStateEl) emptyStateEl.style.display = '';
+              }
+              showStatusMessage('队列消息已撤回，内容已回退到输入框', chatStatusMsg);
+            } else {
+              showStatusMessage('队列中没有可撤回的消息', chatStatusMsg);
+            }
             break;
         }
       });
@@ -1525,10 +1692,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         // 先显示消息在 UI 中（乐观更新）
         addMessage('user', '', text, Date.now());
         
-        // 取消任何待发送的消息
+        // 如果有上一条待发送的消息，先立即发送它（避免丢失）
         if (pendingMessage) {
-          clearTimeout(pendingMessage.timeout);
-          clearInterval(pendingCountdownInterval);
+          executeSend(pendingMessage.text);
+          clearPendingUI();
         }
 
         // 清空输入框
@@ -1584,9 +1751,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
       }
 
-      /** 功能4: 撤回消息 */
+      /** 功能4: 撤回消息，并将文本回退到输入框 */
       function cancelPendingMessage() {
         if (pendingMessage) {
+          // 保存待发送的原始文本
+          var recalledText = pendingMessage.text;
           clearTimeout(pendingMessage.timeout);
           clearInterval(pendingCountdownInterval);
           pendingMessage = null;
@@ -1600,7 +1769,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           if (!messagesEl.querySelector('.message')) {
             if (emptyStateEl) emptyStateEl.style.display = '';
           }
-          showStatusMessage('消息已撤回');
+          // 将撤回的文本回退到输入框中，方便用户编辑后重新发送
+          inputField.value = recalledText;
+          adjustHeight();
+          updateButtonState();
+          inputField.focus();
+          showStatusMessage('消息已撤回，内容已回退到输入框', chatStatusMsg);
         }
       }
 
@@ -1708,6 +1882,75 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           // 静默失败
         }
       }
+
+      /** 更新队列数量角标 */
+      function updateQueueBadge() {
+        if (queueCount > 0) {
+          queueBadge.textContent = '队列: ' + queueCount;
+          queueBadge.classList.add('show');
+        } else {
+          queueBadge.classList.remove('show');
+        }
+      }
+
+      // ====== 自定义右键菜单逻辑 ======
+      /** 禁用默认右键菜单，显示自定义菜单 */
+      document.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+
+        // 根据当前状态更新菜单项
+        var selectedText = window.getSelection().toString();
+        if (selectedText) {
+          ctxCopy.classList.remove('disabled');
+        } else {
+          ctxCopy.classList.add('disabled');
+        }
+
+        if (queueCount > 0) {
+          ctxRecallQueued.classList.remove('disabled');
+          ctxRecallQueued.querySelector('span:last-child').textContent = '撤回排队消息 (' + queueCount + ')';
+        } else {
+          ctxRecallQueued.classList.add('disabled');
+          ctxRecallQueued.querySelector('span:last-child').textContent = '撤回排队消息';
+        }
+
+        // 计算菜单位置，确保不溢出视口
+        var menuWidth = 160;
+        var menuHeight = 80;
+        var x = e.clientX;
+        var y = e.clientY;
+        if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 4;
+        if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 4;
+
+        contextMenu.style.left = x + 'px';
+        contextMenu.style.top = y + 'px';
+        contextMenu.classList.add('show');
+      });
+
+      /** 点击其他区域关闭菜单 */
+      document.addEventListener('click', function() {
+        contextMenu.classList.remove('show');
+      });
+
+      /** 复制功能 */
+      ctxCopy.addEventListener('click', function() {
+        var selectedText = window.getSelection().toString();
+        if (selectedText) {
+          navigator.clipboard.writeText(selectedText).catch(function() {
+            // 备用方案：使用 execCommand
+            document.execCommand('copy');
+          });
+        }
+        contextMenu.classList.remove('show');
+      });
+
+      /** 撤回队列中最后一条消息 */
+      ctxRecallQueued.addEventListener('click', function() {
+        if (queueCount > 0) {
+          vscode.postMessage({ type: 'recallLastQueued' });
+        }
+        contextMenu.classList.remove('show');
+      });
 
       inputField.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
