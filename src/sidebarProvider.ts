@@ -114,8 +114,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         case 'requestTemplates':
           this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
           break;
+        case 'saveSettings':
+          // 保存设置项到 VS Code 配置
+          this.handleSaveSettings(msg as { notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean });
+          break;
+        case 'requestSettings':
+          // 返回当前设置项
+          this.syncSettings();
+          break;
         case 'ready':
-          // Webview 就绪，同步历史记录、规则和模板
+          // Webview 就绪，同步历史记录、规则、模板和设置
           this.syncHistory();
           this.postMessage({
             type: 'syncRules',
@@ -123,6 +131,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             workspaceRules: this.workspaceRules,
           });
           this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
+          this.syncSettings();
           break;
       }
     });
@@ -182,6 +191,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           vscode.commands.executeCommand('copilot-super.panel.focus');
         }
       });
+    }
+
+    // 播放提示音（通过 Webview AudioContext）
+    if (config.get<boolean>('soundOnToolCall', false)) {
+      this.postMessage({ type: 'playSound' });
     }
 
     // 发送到 Webview
@@ -257,8 +271,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         if (this.workspaceRules.trim()) {
           fullPrefix = `${fullPrefix}\n\n[工作区规则]\n${this.workspaceRules}`;
         }
-        // 拼接启用的规则模板
-        const enabledTemplates = this.ruleTemplates.filter(t => t.enabled).map(t => t.content);
+        // 拼接启用的规则模板（发送时自动加数字序号，设置中用户不可见）
+        const enabledTemplates = this.ruleTemplates.filter(t => t.enabled).map((t, i) => `${i + 1}. ${t.content}`);
         if (enabledTemplates.length > 0) {
           fullPrefix = `${fullPrefix}\n\n[规则模板]\n${enabledTemplates.join('\n')}`;
         }
@@ -296,8 +310,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     if (this.workspaceRules.trim()) {
       fullPrompt = `${fullPrompt}\n\n[工作区规则]\n${this.workspaceRules}`;
     }
-    // 拼接启用的规则模板
-    const enabledTemplates = this.ruleTemplates.filter(t => t.enabled).map(t => t.content);
+    // 拼接启用的规则模板（发送时自动加数字序号，设置中用户不可见）
+    const enabledTemplates = this.ruleTemplates.filter(t => t.enabled).map((t, i) => `${i + 1}. ${t.content}`);
     if (enabledTemplates.length > 0) {
       fullPrompt = `${fullPrompt}\n\n[规则模板]\n${enabledTemplates.join('\n')}`;
     }
@@ -350,6 +364,26 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       template.enabled = enabled;
       this.context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
     }
+  }
+
+  /** 保存设置项到 VS Code 配置 */
+  private handleSaveSettings(settings: { notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean }): void {
+    const config = vscode.workspace.getConfiguration('copilot-super');
+    config.update('notifyOnToolCall', settings.notifyOnToolCall, vscode.ConfigurationTarget.Global);
+    config.update('soundOnToolCall', settings.soundOnToolCall, vscode.ConfigurationTarget.Global);
+    config.update('showPluginNotifications', settings.showPluginNotifications, vscode.ConfigurationTarget.Global);
+    this.postMessage({ type: 'settingsSaved' });
+  }
+
+  /** 同步当前设置到 Webview */
+  private syncSettings(): void {
+    const config = vscode.workspace.getConfiguration('copilot-super');
+    this.postMessage({
+      type: 'syncSettings',
+      notifyOnToolCall: config.get<boolean>('notifyOnToolCall', true),
+      soundOnToolCall: config.get<boolean>('soundOnToolCall', false),
+      showPluginNotifications: config.get<boolean>('showPluginNotifications', true),
+    });
   }
 
   private postMessage(msg: Record<string, unknown>): void {
@@ -979,6 +1013,39 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-button-secondaryHoverBackground);
     }
 
+    /* ====== 设置页开关样式 ====== */
+    .setting-toggle {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-sm) 0;
+    }
+
+    .setting-toggle input[type="checkbox"] {
+      margin-top: 2px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+
+    .setting-toggle-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .setting-toggle-info label {
+      font-weight: 500;
+      font-size: 12px;
+      cursor: pointer;
+      display: block;
+    }
+
+    .setting-toggle-info .hint {
+      font-size: 10px;
+      opacity: 0.6;
+      line-height: 1.4;
+      margin-top: 2px;
+    }
+
     /* ====== 功能4: 撤回功能 ====== */
     .pending-send-area {
       padding: var(--spacing-md);
@@ -1070,9 +1137,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     <button class="header-icon-btn" id="clearBtn" title="清除对话">🗑️</button>
   </div>
 
-  <!-- 功能3: 标签页导航 -->
+  <!-- 标签页导航 -->
   <div class="tabs">
     <button class="tab-btn active" data-tab="chat" id="chatTabBtn">💬 对话</button>
+    <button class="tab-btn" data-tab="rules" id="rulesTabBtn">📏 规则</button>
     <button class="tab-btn" data-tab="settings" id="settingsTabBtn">⚙️ 设置</button>
   </div>
 
@@ -1127,9 +1195,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <!-- 设置页面 -->
-  <div class="tab-content" id="settingsTab">
-    <div class="settings-page" id="settingsPage">
+  <!-- 规则页面 -->
+  <div class="tab-content" id="rulesTab">
+    <div class="settings-page" id="rulesPage">
       <div class="setting-group">
         <label>全局规则</label>
         <div class="hint">在所有工作区适用的规则，会添加到提示词前缀之后</div>
@@ -1162,6 +1230,49 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
+  <!-- 设置页面 -->
+  <div class="tab-content" id="settingsTab">
+    <div class="settings-page" id="settingsPage">
+      <div class="setting-group">
+        <label>提示信息设置</label>
+        <div class="hint">控制插件的通知和提示行为</div>
+      </div>
+
+      <div class="setting-group">
+        <div class="setting-toggle">
+          <input type="checkbox" id="settingNotifyOnToolCall" checked>
+          <div class="setting-toggle-info">
+            <label for="settingNotifyOnToolCall">允许 MCP 调用时提示信息</label>
+            <div class="hint">当 Copilot 通过 MCP 工具调用时，在右下角显示通知</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <div class="setting-toggle">
+          <input type="checkbox" id="settingSoundOnToolCall">
+          <div class="setting-toggle-info">
+            <label for="settingSoundOnToolCall">允许 MCP 调用时提示音</label>
+            <div class="hint">当 Copilot 通过 MCP 工具调用时，播放提示音效</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <div class="setting-toggle">
+          <input type="checkbox" id="settingShowPluginNotifications" checked>
+          <div class="setting-toggle-info">
+            <label for="settingShowPluginNotifications">允许插件发送 VS Code 提示</label>
+            <div class="hint">允许本插件在各种操作时发送 VS Code 通知消息</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="save-rules-btn" id="saveSettingsBtn">保存设置</button>
+      <div class="status-message" id="settingsSavedMsg">设置已保存！</div>
+    </div>
+  </div>
+
   <!-- 模板编辑弹窗 -->
   <div class="template-dialog-overlay" id="templateDialogOverlay">
     <div class="template-dialog">
@@ -1189,15 +1300,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const statusText = document.getElementById('statusText');
       const activateBtn = document.getElementById('activateBtn');
 
-      // 功能3: 标签页和规则管理引用
+      // 标签页和规则管理引用
       const chatTabBtn = document.getElementById('chatTabBtn');
+      const rulesTabBtn = document.getElementById('rulesTabBtn');
       const settingsTabBtn = document.getElementById('settingsTabBtn');
       const chatTab = document.getElementById('chatTab');
+      const rulesTab = document.getElementById('rulesTab');
       const settingsTab = document.getElementById('settingsTab');
       const globalRulesInput = document.getElementById('globalRulesInput');
       const workspaceRulesInput = document.getElementById('workspaceRulesInput');
       const saveRulesBtn = document.getElementById('saveRulesBtn');
       const rulesSavedMsg = document.getElementById('rulesSavedMsg');
+
+      // 新设置页元素引用
+      const settingNotifyOnToolCall = document.getElementById('settingNotifyOnToolCall');
+      const settingSoundOnToolCall = document.getElementById('settingSoundOnToolCall');
+      const settingShowPluginNotifications = document.getElementById('settingShowPluginNotifications');
+      const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+      const settingsSavedMsg = document.getElementById('settingsSavedMsg');
 
       // 规则模板库元素引用
       const templateList = document.getElementById('templateList');
@@ -1252,13 +1372,27 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             workspaceRulesInput.value = msg.workspaceRules || '';
             break;
           case 'rulesSaved':
-            // 功能3: 显示规则已保存的提示
-            showStatusMessage('规则已保存！');
+            // 显示规则已保存的提示
+            showStatusMessage('规则已保存！', rulesSavedMsg);
             break;
           case 'syncTemplates':
             // 同步规则模板
             currentTemplates = msg.templates || [];
             renderTemplateList();
+            break;
+          case 'syncSettings':
+            // 同步设置项
+            settingNotifyOnToolCall.checked = msg.notifyOnToolCall !== false;
+            settingSoundOnToolCall.checked = msg.soundOnToolCall === true;
+            settingShowPluginNotifications.checked = msg.showPluginNotifications !== false;
+            break;
+          case 'settingsSaved':
+            // 显示设置已保存提示
+            showStatusMessage('设置已保存！', settingsSavedMsg);
+            break;
+          case 'playSound':
+            // 播放提示音效
+            playNotificationSound();
             break;
         }
       });
@@ -1495,27 +1629,37 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ type: 'copyPrompt' });
       });
 
-      // 功能3: 标签页切换
+      // 标签页切换
       function switchTab(tabName) {
+        // 先移除所有标签和内容的 active
+        chatTab.classList.remove('active');
+        rulesTab.classList.remove('active');
+        settingsTab.classList.remove('active');
+        chatTabBtn.classList.remove('active');
+        rulesTabBtn.classList.remove('active');
+        settingsTabBtn.classList.remove('active');
+
         if (tabName === 'chat') {
           chatTab.classList.add('active');
-          settingsTab.classList.remove('active');
           chatTabBtn.classList.add('active');
-          settingsTabBtn.classList.remove('active');
-        } else if (tabName === 'settings') {
-          settingsTab.classList.add('active');
-          chatTab.classList.remove('active');
-          settingsTabBtn.classList.add('active');
-          chatTabBtn.classList.remove('active');
+        } else if (tabName === 'rules') {
+          rulesTab.classList.add('active');
+          rulesTabBtn.classList.add('active');
           // 请求同步规则
           vscode.postMessage({ type: 'requestRules' });
+        } else if (tabName === 'settings') {
+          settingsTab.classList.add('active');
+          settingsTabBtn.classList.add('active');
+          // 请求同步设置
+          vscode.postMessage({ type: 'requestSettings' });
         }
       }
 
       chatTabBtn.addEventListener('click', () => switchTab('chat'));
+      rulesTabBtn.addEventListener('click', () => switchTab('rules'));
       settingsTabBtn.addEventListener('click', () => switchTab('settings'));
 
-      // 功能3: 保存规则
+      // 保存规则
       saveRulesBtn.addEventListener('click', () => {
         const globalRules = globalRulesInput.value;
         const workspaceRules = workspaceRulesInput.value;
@@ -1526,13 +1670,43 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         });
       });
 
-      // 功能3: 显示状态消息
-      function showStatusMessage(message) {
-        rulesSavedMsg.textContent = message;
-        rulesSavedMsg.classList.add('show');
+      // 保存设置
+      saveSettingsBtn.addEventListener('click', () => {
+        vscode.postMessage({
+          type: 'saveSettings',
+          notifyOnToolCall: settingNotifyOnToolCall.checked,
+          soundOnToolCall: settingSoundOnToolCall.checked,
+          showPluginNotifications: settingShowPluginNotifications.checked,
+        });
+      });
+
+      // 显示状态消息（支持不同目标元素）
+      function showStatusMessage(message, targetEl) {
+        var el = targetEl || rulesSavedMsg;
+        el.textContent = message;
+        el.classList.add('show');
         setTimeout(() => {
-          rulesSavedMsg.classList.remove('show');
+          el.classList.remove('show');
         }, 2000);
+      }
+
+      /** 播放提示音效（使用 Web Audio API） */
+      function playNotificationSound() {
+        try {
+          var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          var oscillator = audioCtx.createOscillator();
+          var gainNode = audioCtx.createGain();
+          oscillator.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
+          oscillator.frequency.value = 800;
+          oscillator.type = 'sine';
+          gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+          oscillator.start(audioCtx.currentTime);
+          oscillator.stop(audioCtx.currentTime + 0.3);
+        } catch (e) {
+          // 静默失败
+        }
       }
 
       inputField.addEventListener('keydown', (e) => {

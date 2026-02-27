@@ -83,7 +83,7 @@ export async function activate(context: vscode.ExtensionContext) {
       const fullPrompt = sidebarProvider.getFullPrompt();
       if (fullPrompt) {
         await vscode.env.clipboard.writeText(fullPrompt);
-        vscode.window.showInformationMessage('Copilot Super: 前置提示词（包含规则）已复制到剪贴板');
+        showNotification('Copilot Super: 前置提示词（包含规则）已复制到剪贴板');
         log('Full prompt with rules copied to clipboard');
       } else {
         // 如果没有设置规则，使用默认行为
@@ -91,7 +91,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const toolName = getMcpToolName(actualPort);
         const promptText = readPromptFile('prefix.txt', toolName);
         await vscode.env.clipboard.writeText(promptText);
-        vscode.window.showInformationMessage('Copilot Super: 前置提示词已复制到剪贴板');
+        showNotification('Copilot Super: 前置提示词已复制到剪贴板');
         log(`Prompt copied to clipboard (tool: ${toolName})`);
       }
     })
@@ -332,7 +332,7 @@ async function startServer(port: number): Promise<void> {
       await ensureWorkspaceFiles(actualPort);
     }
 
-    vscode.window.showInformationMessage(
+    showNotification(
       `Copilot Super: MCP 服务器已在端口 ${actualPort} 启动`
     );
   } catch (err: unknown) {
@@ -351,7 +351,7 @@ async function restartServer(port: number): Promise<void> {
   try {
     await mcpServer?.stop();
     await startServer(port);
-    vscode.window.showInformationMessage('Copilot Super: MCP 服务器已重启');
+    showNotification('Copilot Super: MCP 服务器已重启');
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     vscode.window.showErrorMessage(`Copilot Super: 重启失败 - ${msg}`);
@@ -388,4 +388,13 @@ function updateStatusBar(status: 'starting' | 'running' | 'error', port?: number
 function log(message: string): void {
   const timestamp = new Date().toISOString();
   outputChannel.appendLine(`[${timestamp}] ${message}`);
+}
+
+/** 检查是否允许发送 VS Code 通知，仅在允许时显示 */
+function showNotification(message: string, ...items: string[]): Thenable<string | undefined> | undefined {
+  const config = vscode.workspace.getConfiguration('copilot-super');
+  if (config.get<boolean>('showPluginNotifications', true)) {
+    return vscode.window.showInformationMessage(message, ...items);
+  }
+  return undefined;
 }
