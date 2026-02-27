@@ -367,11 +367,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   /** 保存设置项到 VS Code 配置 */
-  private handleSaveSettings(settings: { notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean }): void {
+  private async handleSaveSettings(settings: { notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean }): Promise<void> {
     const config = vscode.workspace.getConfiguration('copilot-super');
-    config.update('notifyOnToolCall', settings.notifyOnToolCall, vscode.ConfigurationTarget.Global);
-    config.update('soundOnToolCall', settings.soundOnToolCall, vscode.ConfigurationTarget.Global);
-    config.update('showPluginNotifications', settings.showPluginNotifications, vscode.ConfigurationTarget.Global);
+    await config.update('notifyOnToolCall', settings.notifyOnToolCall, vscode.ConfigurationTarget.Global);
+    await config.update('soundOnToolCall', settings.soundOnToolCall, vscode.ConfigurationTarget.Global);
+    await config.update('showPluginNotifications', settings.showPluginNotifications, vscode.ConfigurationTarget.Global);
     this.postMessage({ type: 'settingsSaved' });
   }
 
