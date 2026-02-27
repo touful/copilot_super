@@ -4,7 +4,6 @@ node_modules/
 # 构建产物
 dist/
 out/
-.github/
 
 # 打包产物
 *.vsix
