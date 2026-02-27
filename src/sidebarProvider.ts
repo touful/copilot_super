@@ -1922,6 +1922,28 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         // 打开菜单时立即保存选中文本（点击菜单项后选区会丢失）
         savedSelectedText = window.getSelection().toString();
+
+        // 如果没有选中文本，检测是否右键点击了消息气泡，自动提取整条消息的完整文本
+        if (!savedSelectedText) {
+          var targetMessage = e.target.closest('.message');
+          if (targetMessage) {
+            var titleEl = targetMessage.querySelector('.message-title');
+            var contentEl = targetMessage.querySelector('.message-content');
+            var parts = [];
+            // 提取标题文本（去掉 emoji 图标前缀也无妨，textContent 会包含）
+            if (titleEl) { parts.push(titleEl.textContent.trim()); }
+            if (contentEl) { parts.push(contentEl.textContent.trim()); }
+            savedSelectedText = parts.join('\n').trim();
+            // 更新复制菜单文字，提示用户将要复制整条消息
+            ctxCopy.querySelector('span:last-child').textContent = '复制整条消息';
+          } else {
+            ctxCopy.querySelector('span:last-child').textContent = '复制';
+          }
+        } else {
+          // 有选中文字时还原菜单文字
+          ctxCopy.querySelector('span:last-child').textContent = '复制';
+        }
+
         if (savedSelectedText) {
           ctxCopy.classList.remove('disabled');
         } else {
