@@ -86,6 +86,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         case 'copyPrompt':
           vscode.commands.executeCommand('copilot-super.copyPrompt');
           break;
+        case 'copyText':
+          // 通过扩展API写入剪贴板（webview中navigator.clipboard可能不可用）
+          if (msg.text) {
+            vscode.env.clipboard.writeText(msg.text);
+          }
+          break;
         case 'saveRules':
           // 功能3: 保存规则
           this.globalRules = msg.globalRules || '';
@@ -1278,7 +1284,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           1. 在 Copilot Chat 中发起对话<br>
           2. Copilot 会自动调用 MCP 工具<br>
           3. 在此面板输入指令继续交互<br><br>
-          <em>Shift+Enter 换行 · Enter 发送</em>
+          <em>Enter 发送 · Ctrl+Enter 直接发送 · Shift+Enter 换行</em>
         </div>
       </div>
     </div>
@@ -1308,7 +1314,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         ></textarea>
         <button class="send-btn" id="sendBtn" disabled>发送</button>
       </div>
-      <div class="hint-text">Enter 发送 · Shift+Enter 换行</div>
+      <div class="hint-text">Enter 发送 · Ctrl+Enter 直发 · Shift+Enter 换行</div>
       <div class="status-message" id="chatStatusMsg"></div>
     </div>
   </div>
@@ -1480,6 +1486,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
       let isWaiting = false; // 是否正在等待用户输入以回复当前 Copilot 请求
       let queueCount = 0; // 队列中待消费的消息数量
+      let savedSelectedText = ''; // 右键菜单打开时保存的选中文本
       
       // 功能4: 待发送消息的状态
       let pendingMessage = null; // { text: string, timeout: NodeJS.Timeout }
@@ -1684,8 +1691,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
 
       // ====== 发送消息 ======
-      /** 功能4: 实现 5 秒延迟发送 */
-      function sendMessage() {
+      /** 功能4: 实现 5 秒延迟发送，skipDelay=true 时直接发送 */
+      function sendMessage(skipDelay) {
         const text = inputField.value.trim();
         if (!text) return;
 
@@ -1702,6 +1709,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         inputField.value = '';
         adjustHeight();
         updateButtonState();
+
+        // Ctrl+Enter：跳过延迟，直接发送
+        if (skipDelay) {
+          executeSendDirect(text);
+          return;
+        }
 
         // 功能4: 设置 5 秒延迟发送
         let remainingSeconds = 5;
@@ -1741,6 +1754,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
         vscode.postMessage({ type: 'userResponse', text: text });
         pendingMessage = null;
+      }
+
+      /** Ctrl+Enter 直接发送，不进入延迟队列 */
+      function executeSendDirect(text) {
+        vscode.postMessage({ type: 'userResponse', text: text });
+        // 如果正在等待，清除选项
+        if (isWaiting) {
+          choicesEl.innerHTML = '';
+        }
       }
 
       /** 功能4: 清空待发送 UI */
@@ -1898,9 +1920,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       document.addEventListener('contextmenu', function(e) {
         e.preventDefault();
 
-        // 根据当前状态更新菜单项
-        var selectedText = window.getSelection().toString();
-        if (selectedText) {
+        // 打开菜单时立即保存选中文本（点击菜单项后选区会丢失）
+        savedSelectedText = window.getSelection().toString();
+        if (savedSelectedText) {
           ctxCopy.classList.remove('disabled');
         } else {
           ctxCopy.classList.add('disabled');
@@ -1932,14 +1954,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         contextMenu.classList.remove('show');
       });
 
-      /** 复制功能 */
+      /** 复制功能 - 使用菜单打开时保存的文本，通过扩展API写入剪贴板 */
       ctxCopy.addEventListener('click', function() {
-        var selectedText = window.getSelection().toString();
-        if (selectedText) {
-          navigator.clipboard.writeText(selectedText).catch(function() {
-            // 备用方案：使用 execCommand
-            document.execCommand('copy');
-          });
+        if (savedSelectedText) {
+          vscode.postMessage({ type: 'copyText', text: savedSelectedText });
         }
         contextMenu.classList.remove('show');
       });
@@ -1955,7 +1973,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       inputField.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          sendMessage();
+          // Ctrl+Enter: 直接发送，跳过5秒等待
+          // Enter: 普通发送，进入5秒倒计时
+          sendMessage(e.ctrlKey || e.metaKey);
         }
       });
 
