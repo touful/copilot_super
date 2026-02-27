@@ -1933,7 +1933,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             // 提取标题文本（去掉 emoji 图标前缀也无妨，textContent 会包含）
             if (titleEl) { parts.push(titleEl.textContent.trim()); }
             if (contentEl) { parts.push(contentEl.textContent.trim()); }
-            savedSelectedText = parts.join('\n').trim();
+            savedSelectedText = parts.join('\\n').trim();
             // 更新复制菜单文字，提示用户将要复制整条消息
             ctxCopy.querySelector('span:last-child').textContent = '复制整条消息';
           } else {
