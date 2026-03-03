@@ -18,6 +18,56 @@ interface RuleTemplate {
   enabled: boolean;
 }
 
+// ============ Webview 消息协议类型 ============
+
+/** Webview → Extension 的消息类型 */
+type WebviewToExtMessage =
+  | { type: 'userResponse'; text: string }
+  | { type: 'choiceSelected'; choice: string }
+  | { type: 'clearHistory' }
+  | { type: 'copyPrompt' }
+  | { type: 'copyText'; text: string }
+  | { type: 'saveRules'; workspaceRules: string }
+  | { type: 'requestRules' }
+  | { type: 'saveTemplate'; template: RuleTemplate }
+  | { type: 'deleteTemplate'; id: string }
+  | { type: 'requestTemplates' }
+  | { type: 'saveWorkspaceTemplate'; templateIds: string[] }
+  | { type: 'requestWorkspaceTemplate' }
+  | { type: 'saveSettings'; notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean }
+  | { type: 'requestSettings' }
+  | { type: 'requestQueueInfo' }
+  | { type: 'recallLastQueued' }
+  | { type: 'ready' };
+
+/** Extension → Webview 的消息类型 */
+type ExtToWebviewMessage =
+  | { type: 'showPrompt'; title: string; summary: string; choices: string[]; defaultFeedback: string; timestamp: number; autoResponded: boolean }
+  | { type: 'responseAccepted' }
+  | { type: 'requestCancelled' }
+  | { type: 'historyCleared' }
+  | { type: 'syncHistory'; history: Array<{ role: string; title?: string; content: string; timestamp: number }> }
+  | { type: 'syncRules'; workspaceRules: string }
+  | { type: 'rulesSaved' }
+  | { type: 'syncTemplates'; templates: RuleTemplate[] }
+  | { type: 'syncWorkspaceTemplate'; templateIds: string[] }
+  | { type: 'syncSettings'; notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean }
+  | { type: 'settingsSaved' }
+  | { type: 'playSound' }
+  | { type: 'syncQueue'; count: number; items: string[] }
+  | { type: 'queueRecalled'; text: string | null; count: number };
+
+// ============ 常量定义 ============
+
+/** 消息历史最大保存条数 */
+const MAX_HISTORY_ENTRIES = 200;
+/** 消息队列最大容量 */
+const MAX_QUEUE_SIZE = 50;
+/** 发送延迟时间（毫秒） */
+const SEND_DELAY_MS = 5000;
+/** CSP nonce 字符长度 */
+const NONCE_LENGTH = 32;
+
 export class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'copilot-super.panel';
 
@@ -72,8 +122,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtmlContent();
 
-    // 监听来自 Webview 的消息
-    webviewView.webview.onDidReceiveMessage((msg) => {
+    // 监听来自 Webview 的消息（使用类型化消息协议）
+    webviewView.webview.onDidReceiveMessage((msg: WebviewToExtMessage) => {
       switch (msg.type) {
         case 'userResponse':
           this.resolveUserResponse(msg.text);
@@ -285,21 +335,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     let responseText = text;
     if (this.onGetPrefix) {
-      const prefix = this.onGetPrefix();
-      if (prefix) {
-        // 拼接工作区规则
-        let fullPrefix = prefix;
-        if (this.workspaceRules.trim()) {
-          fullPrefix = `${fullPrefix}\n\n[工作区规则]\n${this.workspaceRules}`;
-        }
-        // 拼接工作区规则模版中的规则（按拖拽顺序，自动加序号）
-        const orderedRules = this.workspaceRuleTemplate
-          .map(id => this.ruleTemplates.find(t => t.id === id))
-          .filter((t): t is RuleTemplate => !!t)
-          .map((t, i) => `${i + 1}. ${t.content}`);
-        if (orderedRules.length > 0) {
-          fullPrefix = `${fullPrefix}\n\n[规则模板]\n${orderedRules.join('\n')}`;
-        }
+      const fullPrefix = this.buildFullPrefix();
+      if (fullPrefix) {
         // 添加后缀提醒
         const toolName = this.onGetToolName?.();
         const suffix = toolName ? `，每次任务完成之后请调用${toolName}进行汇报。` : '';
@@ -318,6 +355,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     // 2. 如果没有请求，存入队列，等待下次 Copilot 调用时使用
+    if (this.responseQueue.length >= MAX_QUEUE_SIZE) {
+      this.responseQueue.shift(); // 队列已满时移除最旧的消息
+    }
     this.responseQueue.push({ original: text, full: responseText });
     // 通知 Webview 更新队列状态
     this.syncQueueInfo();
@@ -325,31 +365,34 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   /** 获取带规则的完整提示词 */
   getFullPrompt(): string {
+    return this.buildFullPrefix();
+  }
+
+  /** 构建完整的前缀提示词（prefix + 工作区规则 + 规则模版） */
+  private buildFullPrefix(): string {
     if (!this.onGetPrefix) {
       return '';
     }
     const prefix = this.onGetPrefix();
-    let fullPrompt = prefix;
+    let result = prefix;
     if (this.workspaceRules.trim()) {
-      fullPrompt = `${fullPrompt}\n\n[工作区规则]\n${this.workspaceRules}`;
+      result = `${result}\n\n[工作区规则]\n${this.workspaceRules}`;
     }
-    // 拼接工作区规则模版中的规则
+    // 拼接工作区规则模版中的规则（按拖拽顺序，自动加序号）
     const orderedRules = this.workspaceRuleTemplate
       .map(id => this.ruleTemplates.find(t => t.id === id))
       .filter((t): t is RuleTemplate => !!t)
       .map((t, i) => `${i + 1}. ${t.content}`);
     if (orderedRules.length > 0) {
-      fullPrompt = `${fullPrompt}\n\n[规则模板]\n${orderedRules.join('\n')}`;
+      result = `${result}\n\n[规则模板]\n${orderedRules.join('\n')}`;
     }
-    return fullPrompt;
+    return result;
   }
 
   /** 持久化对话历史到 workspaceState */
   private saveHistory(): void {
-    // 最多保存 200 条，避免存储过大
-    const maxEntries = 200;
-    if (this.messageHistory.length > maxEntries) {
-      this.messageHistory = this.messageHistory.slice(-maxEntries);
+    if (this.messageHistory.length > MAX_HISTORY_ENTRIES) {
+      this.messageHistory = this.messageHistory.slice(-MAX_HISTORY_ENTRIES);
     }
     this.context.workspaceState.update('copilot-super.history', this.messageHistory);
   }
@@ -438,7 +481,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private postMessage(msg: Record<string, unknown>): void {
+  private postMessage(msg: ExtToWebviewMessage): void {
     this.webviewView?.webview.postMessage(msg);
   }
 
@@ -451,12 +494,25 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   // ============ Webview HTML ============
 
+  /** 生成 CSP nonce 随机字符串 */
+  private getNonce(): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < NONCE_LENGTH; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+  }
+
   private getHtmlContent(): string {
+    // 生成 CSP nonce 用于内联脚本安全
+    const nonce = this.getNonce();
     return /*html*/ `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <style>
     :root {
       --spacing-xs: 4px;
@@ -1508,7 +1564,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <script>
+  <script nonce="${nonce}">
     (function() {
       // @ts-ignore
       const vscode = acquireVsCodeApi();
@@ -1810,8 +1866,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           return;
         }
 
-        // 功能4: 设置 5 秒延迟发送
-        let remainingSeconds = 5;
+        // 设置延迟发送
+        var SEND_DELAY = ${SEND_DELAY_MS};
+        let remainingSeconds = Math.ceil(SEND_DELAY / 1000);
         pendingSendText.textContent = text.substring(0, 100) + (text.length > 100 ? '...' : '');
         pendingCountdown.textContent = remainingSeconds + '秒';
         pendingSendArea.classList.add('show');
@@ -1825,11 +1882,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           }
         }, 1000);
 
-        // 5 秒后自动发送
+        // 延迟后自动发送
         const timeout = setTimeout(() => {
           executeSend(text);
           clearPendingUI();
-        }, 5000);
+        }, SEND_DELAY);
 
         // 存储待发送消息
         pendingMessage = { text, timeout };
@@ -1978,22 +2035,28 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }, 2000);
       }
 
-      /** 播放提示音效（使用 Web Audio API） */
+      /** 全局复用的 AudioContext 实例（延迟初始化） */
+      var sharedAudioCtx = null;
+
+      /** 播放提示音效（使用 Web Audio API，复用 AudioContext 实例） */
       function playNotificationSound() {
         try {
-          var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          var oscillator = audioCtx.createOscillator();
-          var gainNode = audioCtx.createGain();
+          if (!sharedAudioCtx) {
+            sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          var oscillator = sharedAudioCtx.createOscillator();
+          var gainNode = sharedAudioCtx.createGain();
           oscillator.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
+          gainNode.connect(sharedAudioCtx.destination);
           oscillator.frequency.value = 800;
           oscillator.type = 'sine';
-          gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
-          gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
-          oscillator.start(audioCtx.currentTime);
-          oscillator.stop(audioCtx.currentTime + 0.3);
+          gainNode.gain.setValueAtTime(0.3, sharedAudioCtx.currentTime);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, sharedAudioCtx.currentTime + 0.3);
+          oscillator.start(sharedAudioCtx.currentTime);
+          oscillator.stop(sharedAudioCtx.currentTime + 0.3);
         } catch (e) {
-          // 静默失败
+          // 静默失败，重置 AudioContext 以便下次重试
+          sharedAudioCtx = null;
         }
       }
 

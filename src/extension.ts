@@ -275,15 +275,28 @@ async function ensureMcpJsonFile(folder: vscode.WorkspaceFolder, port: number): 
   }
 }
 
+/** 提示词文件缓存：key = filename, value = { content, mtime } */
+const promptFileCache = new Map<string, { content: string; mtime: number }>();
+
 /**
  * 从外部文件读取提示词模板，替换 {{TOOL_NAME}} 占位符
+ * 使用缓存避免重复同步读取，仅在文件修改时间变化时重新读取
  * @param filename prompts 目录下的文件名
  * @param toolName 动态工具名，如 copilot_super_1
  */
 function readPromptFile(filename: string, toolName: string): string {
   try {
     const filePath = path.join(extensionPath, 'prompts', filename);
+    const stat = fs.statSync(filePath);
+    const mtime = stat.mtimeMs;
+    const cached = promptFileCache.get(filename);
+    // 缓存命中：文件未修改时直接返回
+    if (cached && cached.mtime === mtime) {
+      return cached.content.replace(/\{\{TOOL_NAME\}\}/g, toolName);
+    }
+    // 缓存未命中或已过期：读取文件并更新缓存
     const content = fs.readFileSync(filePath, 'utf-8');
+    promptFileCache.set(filename, { content, mtime });
     return content.replace(/\{\{TOOL_NAME\}\}/g, toolName);
   } catch (err) {
     log(`Failed to read prompt file ${filename}: ${err}`);

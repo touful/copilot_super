@@ -94,6 +94,17 @@ function buildToolDefinition(toolName: string) {
   };
 }
 
+// ============ 常量定义 ============
+
+/** SSE 心跳间隔（毫秒） */
+const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
+/** POST 长轮询保活间隔（毫秒），防止 undici 超时 */
+const POST_KEEPALIVE_INTERVAL_MS = 120_000;
+/** 端口重试最大次数 */
+const MAX_PORT_ATTEMPTS = 10;
+/** 请求体最大大小（字节），防止内存耗尽攻击 */
+const MAX_REQUEST_BODY_SIZE = 1024 * 1024; // 1MB
+
 // ============ MCP HTTP Server ============
 
 export class McpHttpServer {
@@ -138,11 +149,10 @@ export class McpHttpServer {
     this.sessionId = crypto.randomUUID();
     this.sessionInitialized = false;
 
-    // 尝试端口: 从配置端口开始递增，最多尝试10个
-    const maxAttempts = 10;
+    // 尝试端口: 从配置端口开始递增
     let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
       const tryPort = this.port + attempt;
       try {
         await this.tryListen(tryPort);
@@ -248,7 +258,7 @@ export class McpHttpServer {
     }
 
     // CORS 头
-    this.setCorsHeaders(res);
+    this.setCorsHeaders(req, res);
 
     switch (req.method) {
       case 'OPTIONS':
@@ -274,8 +284,16 @@ export class McpHttpServer {
     }
   }
 
-  private setCorsHeaders(res: http.ServerResponse): void {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+  private setCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse): void {
+    // 限制 CORS：仅允许 VS Code 内部请求和无 Origin 的请求（Node.js/Copilot）
+    const origin = req.headers.origin;
+    if (origin && origin.startsWith('vscode-webview://')) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    } else if (!origin) {
+      // Node.js 请求不携带 Origin 头，允许通过
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    // 对于有 Origin 但非 vscode-webview:// 的请求，不设置 CORS 头
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id');
     res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
@@ -299,7 +317,7 @@ export class McpHttpServer {
       } catch {
         clearInterval(keepAlive);
       }
-    }, 15000);
+    }, SSE_HEARTBEAT_INTERVAL_MS);
 
     req.on('close', () => {
       clearInterval(keepAlive);
@@ -383,7 +401,7 @@ export class McpHttpServer {
           } catch {
             clearInterval(keepaliveInterval);
           }
-        }, 120_000);
+        }, POST_KEEPALIVE_INTERVAL_MS);
 
         // 3. 监听客户端断开，取消挂起的工具调用
         let clientDisconnected = false;
@@ -554,7 +572,16 @@ export class McpHttpServer {
   private readBody(req: http.IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let totalSize = 0;
+      req.on('data', (chunk: Buffer) => {
+        totalSize += chunk.length;
+        if (totalSize > MAX_REQUEST_BODY_SIZE) {
+          req.destroy();
+          reject(new Error(`Request body exceeds ${MAX_REQUEST_BODY_SIZE} bytes limit`));
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
       req.on('error', reject);
     });
