@@ -578,7 +578,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   <!-- 规则页面 -->
   <div class="tab-content" id="rulesTab" role="tabpanel" aria-labelledby="rulesTabBtn">
-    <div class="settings-page" id="rulesPage">
+    <div class="settings-page">
       <div class="setting-group">
         <label>工作区规则</label>
         <div class="hint">仅在当前工作区适用的规则文本，会添加到提示词前缀之后</div>
@@ -611,7 +611,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   <!-- 设置页面 -->
   <div class="tab-content" id="settingsTab" role="tabpanel" aria-labelledby="settingsTabBtn">
-    <div class="settings-page" id="settingsPage">
+    <div class="settings-page">
       <div class="setting-group">
         <label>提示信息设置</label>
         <div class="hint">控制插件的通知和提示行为</div>

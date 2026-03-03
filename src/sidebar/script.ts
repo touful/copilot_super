@@ -48,7 +48,6 @@ export function getSidebarScript(sendDelayMs: number): string {
 
       // 规则模版（工作区拖拽区域）元素引用
       const workspaceTemplateList = document.getElementById('workspaceTemplateList');
-      const templateDropPlaceholder = document.getElementById('templateDropPlaceholder');
 
       let currentTemplates = [];
       let workspaceTemplateIds = []; // 工作区规则模版：有序的规则ID列表

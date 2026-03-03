@@ -385,6 +385,7 @@ export function getSidebarStyles(): string {
       opacity: 0.7;
       transition: all 0.2s ease;
       text-align: center;
+      position: relative;
     }
 
     .tab-btn:hover {
@@ -398,10 +399,6 @@ export function getSidebarStyles(): string {
     }
 
     /* C5: 标签页未读指示（使用 ::after 伪元素，无需额外 DOM） */
-    .tab-btn {
-      position: relative;
-    }
-
     .tab-btn.has-unread::after {
       content: '';
       display: block;
@@ -605,15 +602,6 @@ export function getSidebarStyles(): string {
     .workspace-template-list.drag-over {
       border-color: var(--vscode-button-background);
       background: color-mix(in srgb, var(--vscode-focusBorder) 15%, transparent);
-    }
-
-    /* C1: 拖拽插入位置指示 */
-    .drag-insert-indicator {
-      height: 2px;
-      background: var(--vscode-focusBorder);
-      border-radius: 1px;
-      margin: -1px 0;
-      pointer-events: none;
     }
 
     .template-drop-placeholder {
