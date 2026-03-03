@@ -323,6 +323,10 @@ export function getSidebarScript(sendDelayMs: number): string {
                choicesEl.innerHTML = '';
             }
           });
+          choicesEl.appendChild(btn);
+        });
+      }
+
       function clearMessages() {
         messagesEl.innerHTML = '';
         lastMessageDate = ''; // 重置日期分隔符
@@ -422,6 +426,9 @@ export function getSidebarScript(sendDelayMs: number): string {
         // 如果正在等待，清除选项
         if (isWaiting) {
           choicesEl.innerHTML = '';
+        }
+      }
+
       /** 功能4: 清空待发送 UI */
       function clearPendingUI() {
         pendingSendArea.classList.remove('show');
