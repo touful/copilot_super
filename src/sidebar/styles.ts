@@ -107,6 +107,25 @@ export function getSidebarStyles(): string {
       background: var(--vscode-toolbar-hoverBackground);
     }
 
+    /* 激活前缀按钮 */
+    .activate-prefix-btn {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      cursor: pointer;
+      font-size: var(--font-sm);
+      padding: 3px 10px;
+      border-radius: 4px;
+      flex-shrink: 0;
+      font-weight: 500;
+      transition: background var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .activate-prefix-btn:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+
     /* ====== C6: 保存按钮 loading 状态 ====== */
     .save-rules-btn.loading,
     .save-rules-btn.success {

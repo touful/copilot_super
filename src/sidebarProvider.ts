@@ -519,7 +519,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     <span class="header-text" id="statusText">MCP 服务就绪</span>
     <span class="header-state-pill" id="headerStatePill" aria-live="polite">就绪</span>
     <span class="queue-badge" id="queueBadge" title="排队中的消息数" aria-live="polite">0</span>
-    <button class="header-icon-btn" id="activateBtn" title="复制前置提示词" aria-label="复制前置提示词"><span role="img" aria-hidden="true">📋</span></button>
+    <button class="activate-prefix-btn" id="activateBtn" title="复制前置提示词" aria-label="复制前置提示词">激活前缀</button>
     <button class="header-icon-btn" id="clearBtn" title="清除对话" aria-label="清除对话"><span role="img" aria-hidden="true">🗑️</span></button>
   </div>
 
