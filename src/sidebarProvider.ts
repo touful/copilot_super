@@ -35,9 +35,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }> = [];
 
   // 规则存储 (功能3)
-  private globalRules: string = '';
   private workspaceRules: string = '';
   private ruleTemplates: RuleTemplate[] = [];
+  // 工作区级别的规则模版：有序的规则ID数组，每个工作区独立缓存
+  private workspaceRuleTemplate: string[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -45,11 +46,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   ) {
     // 从持久化存储加载对话历史
     this.messageHistory = context.workspaceState.get('copilot-super.history', []);
-    // 从持久化存储加载规则
-    this.globalRules = context.globalState.get<string>('copilot-super.globalRules', '');
+    // 从持久化存储加载规则（仅保留工作区规则）
     this.workspaceRules = context.workspaceState.get<string>('copilot-super.workspaceRules', '');
-    // 加载规则模板
+    // 加载规则库（全局共享）
     this.ruleTemplates = context.globalState.get<RuleTemplate[]>('copilot-super.ruleTemplates', []);
+    // 加载工作区级别的规则模版（有序ID列表）
+    this.workspaceRuleTemplate = context.workspaceState.get<string[]>('copilot-super.workspaceRuleTemplate', []);
     if (this.ruleTemplates.length === 0) {
       this.ruleTemplates = this.getDefaultTemplates();
       context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
@@ -93,18 +95,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           }
           break;
         case 'saveRules':
-          // 功能3: 保存规则
-          this.globalRules = msg.globalRules || '';
+          // 保存工作区规则
           this.workspaceRules = msg.workspaceRules || '';
-          this.context.globalState.update('copilot-super.globalRules', this.globalRules);
           this.context.workspaceState.update('copilot-super.workspaceRules', this.workspaceRules);
           this.postMessage({ type: 'rulesSaved' });
           break;
         case 'requestRules':
-          // 功能3: 返回当前规则
+          // 返回当前工作区规则
           this.postMessage({
             type: 'syncRules',
-            globalRules: this.globalRules,
             workspaceRules: this.workspaceRules,
           });
           break;
@@ -113,9 +112,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
         case 'deleteTemplate':
           this.handleDeleteTemplate(msg.id as string);
-          break;
-        case 'toggleTemplate':
-          this.handleToggleTemplate(msg.id as string, msg.enabled as boolean);
           break;
         case 'requestTemplates':
           this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
@@ -136,15 +132,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           // 撤回队列中最后一条消息
           this.handleRecallLastQueued();
           break;
+        case 'saveWorkspaceTemplate':
+          // 保存工作区规则模版（有序ID列表）
+          this.workspaceRuleTemplate = msg.templateIds || [];
+          this.context.workspaceState.update('copilot-super.workspaceRuleTemplate', this.workspaceRuleTemplate);
+          break;
+        case 'requestWorkspaceTemplate':
+          // 返回当前工作区规则模版
+          this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
+          break;
         case 'ready':
           // Webview 就绪，同步历史记录、规则、模板、设置和队列
           this.syncHistory();
           this.postMessage({
             type: 'syncRules',
-            globalRules: this.globalRules,
             workspaceRules: this.workspaceRules,
           });
           this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
+          this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
           this.syncSettings();
           this.syncQueueInfo();
           break;
@@ -282,23 +287,24 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     if (this.onGetPrefix) {
       const prefix = this.onGetPrefix();
       if (prefix) {
-        // 功能3: 拼接全局规则和工作区规则
+        // 拼接工作区规则
         let fullPrefix = prefix;
-        if (this.globalRules.trim()) {
-          fullPrefix = `${fullPrefix}\n\n[全局规则]\n${this.globalRules}`;
-        }
         if (this.workspaceRules.trim()) {
           fullPrefix = `${fullPrefix}\n\n[工作区规则]\n${this.workspaceRules}`;
         }
-        // 拼接启用的规则模板（发送时自动加数字序号，设置中用户不可见）
-        const enabledTemplates = this.ruleTemplates.filter(t => t.enabled).map((t, i) => `${i + 1}. ${t.content}`);
-        if (enabledTemplates.length > 0) {
-          fullPrefix = `${fullPrefix}\n\n[规则模板]\n${enabledTemplates.join('\n')}`;
+        // 拼接工作区规则模版中的规则（按拖拽顺序，自动加序号）
+        const orderedRules = this.workspaceRuleTemplate
+          .map(id => this.ruleTemplates.find(t => t.id === id))
+          .filter((t): t is RuleTemplate => !!t)
+          .map((t, i) => `${i + 1}. ${t.content}`);
+        if (orderedRules.length > 0) {
+          fullPrefix = `${fullPrefix}\n\n[规则模板]\n${orderedRules.join('\n')}`;
         }
-        // 功能1: 添加后缀提醒
+        // 添加后缀提醒
         const toolName = this.onGetToolName?.();
         const suffix = toolName ? `，每次任务完成之后请调用${toolName}进行汇报。` : '';
-        responseText = `${fullPrefix}\n\n${text}${suffix}`;
+        // 用[待办任务]引导真实任务，避免AI忽略真实任务
+        responseText = `${fullPrefix}\n\n[待办任务]\n${text}${suffix}`;
       }
     }
 
@@ -317,23 +323,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.syncQueueInfo();
   }
 
-  /** 获取带规则的完整提示词 (功能3) */
+  /** 获取带规则的完整提示词 */
   getFullPrompt(): string {
     if (!this.onGetPrefix) {
       return '';
     }
     const prefix = this.onGetPrefix();
     let fullPrompt = prefix;
-    if (this.globalRules.trim()) {
-      fullPrompt = `${fullPrompt}\n\n[全局规则]\n${this.globalRules}`;
-    }
     if (this.workspaceRules.trim()) {
       fullPrompt = `${fullPrompt}\n\n[工作区规则]\n${this.workspaceRules}`;
     }
-    // 拼接启用的规则模板（发送时自动加数字序号，设置中用户不可见）
-    const enabledTemplates = this.ruleTemplates.filter(t => t.enabled).map((t, i) => `${i + 1}. ${t.content}`);
-    if (enabledTemplates.length > 0) {
-      fullPrompt = `${fullPrompt}\n\n[规则模板]\n${enabledTemplates.join('\n')}`;
+    // 拼接工作区规则模版中的规则
+    const orderedRules = this.workspaceRuleTemplate
+      .map(id => this.ruleTemplates.find(t => t.id === id))
+      .filter((t): t is RuleTemplate => !!t)
+      .map((t, i) => `${i + 1}. ${t.content}`);
+    if (orderedRules.length > 0) {
+      fullPrompt = `${fullPrompt}\n\n[规则模板]\n${orderedRules.join('\n')}`;
     }
     return fullPrompt;
   }
@@ -374,16 +380,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private handleDeleteTemplate(id: string): void {
     this.ruleTemplates = this.ruleTemplates.filter(t => t.id !== id);
     this.context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
+    // 同时从工作区规则模版中移除
+    this.workspaceRuleTemplate = this.workspaceRuleTemplate.filter(tid => tid !== id);
+    this.context.workspaceState.update('copilot-super.workspaceRuleTemplate', this.workspaceRuleTemplate);
     this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
-  }
-
-  /** 切换规则模板启用状态 */
-  private handleToggleTemplate(id: string, enabled: boolean): void {
-    const template = this.ruleTemplates.find(t => t.id === id);
-    if (template) {
-      template.enabled = enabled;
-      this.context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
-    }
+    this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
   }
 
   /** 保存设置项到 VS Code 配置 */
@@ -884,7 +885,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       opacity: 1;
     }
 
-    /* ====== 规则模板库 ====== */
+    /* ====== 规则库 ====== */
     .template-list {
       display: flex;
       flex-direction: column;
@@ -899,15 +900,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       border-radius: var(--radius);
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-panel-border);
+      cursor: grab;
+      user-select: none;
     }
 
     .template-item:hover {
       border-color: var(--vscode-focusBorder);
     }
 
-    .template-item input[type="checkbox"] {
+    .template-item.dragging {
+      opacity: 0.4;
+    }
+
+    .template-item-drag-handle {
       flex-shrink: 0;
-      cursor: pointer;
+      opacity: 0.4;
+      font-size: 12px;
+      cursor: grab;
     }
 
     .template-item-info {
@@ -951,6 +960,84 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     .template-item-actions button:hover {
+      opacity: 1;
+      background: var(--vscode-toolbar-hoverBackground);
+    }
+
+    /* ====== 规则模版（工作区拖拽区域） ====== */
+    .workspace-template-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-height: 48px;
+      border: 2px dashed var(--vscode-panel-border);
+      border-radius: var(--radius);
+      padding: var(--spacing-sm);
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .workspace-template-list.drag-over {
+      border-color: var(--vscode-focusBorder);
+      background: color-mix(in srgb, var(--vscode-focusBorder) 10%, transparent);
+    }
+
+    .template-drop-placeholder {
+      text-align: center;
+      padding: var(--spacing-md);
+      font-size: 11px;
+      opacity: 0.5;
+    }
+
+    .workspace-template-item {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      padding: 6px var(--spacing-sm);
+      border-radius: var(--radius);
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-focusBorder);
+      cursor: grab;
+      user-select: none;
+      transition: opacity 0.15s;
+    }
+
+    .workspace-template-item:hover {
+      border-color: var(--vscode-button-background);
+    }
+
+    .workspace-template-item.dragging {
+      opacity: 0.4;
+    }
+
+    .workspace-template-item .wt-drag-handle {
+      flex-shrink: 0;
+      opacity: 0.4;
+      font-size: 12px;
+      cursor: grab;
+    }
+
+    .workspace-template-item .wt-name {
+      flex: 1;
+      font-size: 12px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .workspace-template-item .wt-remove {
+      background: transparent;
+      border: none;
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-size: 12px;
+      opacity: 0.5;
+      transition: opacity 0.15s;
+    }
+
+    .workspace-template-item .wt-remove:hover {
       opacity: 1;
       background: var(--vscode-toolbar-hoverBackground);
     }
@@ -1323,18 +1410,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   <div class="tab-content" id="rulesTab">
     <div class="settings-page" id="rulesPage">
       <div class="setting-group">
-        <label>全局规则</label>
-        <div class="hint">在所有工作区适用的规则，会添加到提示词前缀之后</div>
-        <textarea 
-          class="rule-textarea" 
-          id="globalRulesInput" 
-          placeholder="输入全局规则，每条规则占一行或使用段落分隔..."
-        ></textarea>
-      </div>
-
-      <div class="setting-group">
         <label>工作区规则</label>
-        <div class="hint">仅在当前工作区适用的规则，会添加到全局规则之后</div>
+        <div class="hint">仅在当前工作区适用的规则文本，会添加到提示词前缀之后</div>
         <textarea 
           class="rule-textarea" 
           id="workspaceRulesInput" 
@@ -1346,10 +1423,18 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       <div class="status-message" id="rulesSavedMsg">规则已保存！</div>
 
       <div class="setting-group">
-        <label>规则模板库</label>
-        <div class="hint">勾选的模板会自动拼接到前置提示词中</div>
+        <label>规则模版</label>
+        <div class="hint">从下方规则库拖入规则，支持拖拽排序，每个工作区独立缓存</div>
+        <div class="workspace-template-list" id="workspaceTemplateList">
+          <div class="template-drop-placeholder" id="templateDropPlaceholder">将规则从下方拖到此处</div>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <label>规则库</label>
+        <div class="hint">所有可用的规则，拖拽到上方规则模版中使用</div>
         <div class="template-list" id="templateList"></div>
-        <button class="add-template-btn" id="addTemplateBtn">+ 添加自定义模板</button>
+        <button class="add-template-btn" id="addTemplateBtn">+ 添加自定义规则</button>
       </div>
     </div>
   </div>
@@ -1400,9 +1485,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   <!-- 模板编辑弹窗 -->
   <div class="template-dialog-overlay" id="templateDialogOverlay">
     <div class="template-dialog">
-      <h3 id="templateDialogTitle">添加模板</h3>
-      <input type="text" id="templateNameInput" placeholder="模板名称...">
-      <textarea id="templateContentInput" placeholder="模板内容，如：请使用中文回复所有内容..."></textarea>
+      <h3 id="templateDialogTitle">添加规则</h3>
+      <input type="text" id="templateNameInput" placeholder="规则名称...">
+      <textarea id="templateContentInput" placeholder="规则内容，如：请使用中文回复所有内容..."></textarea>
       <div class="dialog-actions">
         <button class="dialog-cancel-btn" id="dialogCancelBtn">取消</button>
         <button class="dialog-save-btn" id="dialogSaveBtn">保存</button>
@@ -1444,7 +1529,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const chatTab = document.getElementById('chatTab');
       const rulesTab = document.getElementById('rulesTab');
       const settingsTab = document.getElementById('settingsTab');
-      const globalRulesInput = document.getElementById('globalRulesInput');
       const workspaceRulesInput = document.getElementById('workspaceRulesInput');
       const saveRulesBtn = document.getElementById('saveRulesBtn');
       const rulesSavedMsg = document.getElementById('rulesSavedMsg');
@@ -1456,7 +1540,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const saveSettingsBtn = document.getElementById('saveSettingsBtn');
       const settingsSavedMsg = document.getElementById('settingsSavedMsg');
 
-      // 规则模板库元素引用
+      // 规则库元素引用
       const templateList = document.getElementById('templateList');
       const addTemplateBtn = document.getElementById('addTemplateBtn');
       const templateDialogOverlay = document.getElementById('templateDialogOverlay');
@@ -1466,7 +1550,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const dialogSaveBtn = document.getElementById('dialogSaveBtn');
       const dialogCancelBtn = document.getElementById('dialogCancelBtn');
 
+      // 规则模版（工作区拖拽区域）元素引用
+      const workspaceTemplateList = document.getElementById('workspaceTemplateList');
+      const templateDropPlaceholder = document.getElementById('templateDropPlaceholder');
+
       var currentTemplates = [];
+      var workspaceTemplateIds = []; // 工作区规则模版：有序的规则ID列表
       var editingTemplateId = null; // null = 新增, string = 编辑
 
       // 功能4: 撤回功能引用
@@ -1513,8 +1602,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             syncHistory(msg.history);
             break;
           case 'syncRules':
-            // 功能3: 同步规则
-            globalRulesInput.value = msg.globalRules || '';
+            // 同步工作区规则
             workspaceRulesInput.value = msg.workspaceRules || '';
             break;
           case 'rulesSaved':
@@ -1522,9 +1610,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             showStatusMessage('规则已保存！', rulesSavedMsg);
             break;
           case 'syncTemplates':
-            // 同步规则模板
+            // 同步规则库
             currentTemplates = msg.templates || [];
             renderTemplateList();
+            renderWorkspaceTemplate();
+            break;
+          case 'syncWorkspaceTemplate':
+            // 同步工作区规则模版
+            workspaceTemplateIds = msg.templateIds || [];
+            renderWorkspaceTemplate();
             break;
           case 'syncSettings':
             // 同步设置项
@@ -1857,11 +1951,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
       // 保存规则
       saveRulesBtn.addEventListener('click', () => {
-        const globalRules = globalRulesInput.value;
         const workspaceRules = workspaceRulesInput.value;
         vscode.postMessage({
           type: 'saveRules',
-          globalRules: globalRules,
           workspaceRules: workspaceRules,
         });
       });
@@ -2111,19 +2203,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         return html;
       }
 
-      // ====== 规则模板库管理 ======
+      // ====== 规则库管理 ======
       function renderTemplateList() {
         templateList.innerHTML = '';
         currentTemplates.forEach(function(tpl) {
           var item = document.createElement('div');
           item.className = 'template-item';
+          item.draggable = true;
+          item.setAttribute('data-template-id', tpl.id);
 
-          var cb = document.createElement('input');
-          cb.type = 'checkbox';
-          cb.checked = tpl.enabled;
-          cb.addEventListener('change', function() {
-            vscode.postMessage({ type: 'toggleTemplate', id: tpl.id, enabled: cb.checked });
-          });
+          // 拖拽手柄
+          var dragHandle = document.createElement('span');
+          dragHandle.className = 'template-item-drag-handle';
+          dragHandle.textContent = '⠿';
 
           var info = document.createElement('div');
           info.className = 'template-item-info';
@@ -2134,38 +2226,200 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           actions.className = 'template-item-actions';
 
           var editBtn = document.createElement('button');
-          editBtn.textContent = '\u270f\ufe0f';
-          editBtn.title = '\u7f16\u8f91';
+          editBtn.textContent = '✏️';
+          editBtn.title = '编辑';
           editBtn.addEventListener('click', function() {
             openTemplateDialog(tpl);
           });
 
           var delBtn = document.createElement('button');
-          delBtn.textContent = '\ud83d\uddd1\ufe0f';
-          delBtn.title = '\u5220\u9664';
+          delBtn.textContent = '🗑️';
+          delBtn.title = '删除';
           delBtn.addEventListener('click', function() {
+            // 同时从工作区模版中移除
+            workspaceTemplateIds = workspaceTemplateIds.filter(function(id) { return id !== tpl.id; });
+            saveWorkspaceTemplate();
             vscode.postMessage({ type: 'deleteTemplate', id: tpl.id });
           });
 
           actions.appendChild(editBtn);
           actions.appendChild(delBtn);
 
-          item.appendChild(cb);
+          item.appendChild(dragHandle);
           item.appendChild(info);
           item.appendChild(actions);
+
+          // 拖拽事件：从规则库拖到规则模版
+          item.addEventListener('dragstart', function(e) {
+            e.dataTransfer.setData('text/plain', tpl.id);
+            e.dataTransfer.setData('source', 'library');
+            item.classList.add('dragging');
+          });
+          item.addEventListener('dragend', function() {
+            item.classList.remove('dragging');
+          });
+
           templateList.appendChild(item);
         });
+      }
+
+      // ====== 规则模版（工作区拖拽区域）管理 ======
+      function renderWorkspaceTemplate() {
+        // 清空现有内容
+        workspaceTemplateList.innerHTML = '';
+        // 过滤出有效的规则ID
+        var validIds = workspaceTemplateIds.filter(function(id) {
+          return currentTemplates.some(function(t) { return t.id === id; });
+        });
+        // 如果有效ID和原始列表不同，更新
+        if (validIds.length !== workspaceTemplateIds.length) {
+          workspaceTemplateIds = validIds;
+          saveWorkspaceTemplate();
+        }
+
+        if (validIds.length === 0) {
+          var placeholder = document.createElement('div');
+          placeholder.className = 'template-drop-placeholder';
+          placeholder.id = 'templateDropPlaceholder';
+          placeholder.textContent = '将规则从下方拖到此处';
+          workspaceTemplateList.appendChild(placeholder);
+        } else {
+          validIds.forEach(function(id, index) {
+            var tpl = currentTemplates.find(function(t) { return t.id === id; });
+            if (!tpl) return;
+
+            var item = document.createElement('div');
+            item.className = 'workspace-template-item';
+            item.draggable = true;
+            item.setAttribute('data-template-id', id);
+            item.setAttribute('data-index', String(index));
+
+            var dragHandle = document.createElement('span');
+            dragHandle.className = 'wt-drag-handle';
+            dragHandle.textContent = '⠿';
+
+            var nameSpan = document.createElement('span');
+            nameSpan.className = 'wt-name';
+            nameSpan.textContent = tpl.name;
+
+            var removeBtn = document.createElement('button');
+            removeBtn.className = 'wt-remove';
+            removeBtn.textContent = '✕';
+            removeBtn.title = '移除';
+            removeBtn.addEventListener('click', function() {
+              workspaceTemplateIds = workspaceTemplateIds.filter(function(wid) { return wid !== id; });
+              saveWorkspaceTemplate();
+              renderWorkspaceTemplate();
+            });
+
+            item.appendChild(dragHandle);
+            item.appendChild(nameSpan);
+            item.appendChild(removeBtn);
+
+            // 拖拽排序事件
+            item.addEventListener('dragstart', function(e) {
+              e.dataTransfer.setData('text/plain', id);
+              e.dataTransfer.setData('source', 'template');
+              e.dataTransfer.setData('fromIndex', String(index));
+              item.classList.add('dragging');
+            });
+            item.addEventListener('dragend', function() {
+              item.classList.remove('dragging');
+            });
+
+            workspaceTemplateList.appendChild(item);
+          });
+        }
+      }
+
+      function saveWorkspaceTemplate() {
+        vscode.postMessage({ type: 'saveWorkspaceTemplate', templateIds: workspaceTemplateIds });
+      }
+
+      // ====== 拖拽放置逻辑 ======
+      workspaceTemplateList.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        workspaceTemplateList.classList.add('drag-over');
+
+        // 计算插入位置指示
+        var afterElement = getDragAfterElement(workspaceTemplateList, e.clientY);
+        var draggingEl = workspaceTemplateList.querySelector('.dragging');
+        if (draggingEl) {
+          if (afterElement) {
+            workspaceTemplateList.insertBefore(draggingEl, afterElement);
+          } else {
+            workspaceTemplateList.appendChild(draggingEl);
+          }
+        }
+      });
+
+      workspaceTemplateList.addEventListener('dragleave', function(e) {
+        // 仅当真正离开容器时移除样式
+        if (!workspaceTemplateList.contains(e.relatedTarget)) {
+          workspaceTemplateList.classList.remove('drag-over');
+        }
+      });
+
+      workspaceTemplateList.addEventListener('drop', function(e) {
+        e.preventDefault();
+        workspaceTemplateList.classList.remove('drag-over');
+        var droppedId = e.dataTransfer.getData('text/plain');
+        var source = e.dataTransfer.getData('source');
+
+        if (!droppedId) return;
+
+        if (source === 'library') {
+          // 从规则库拖入：检查是否已存在
+          if (workspaceTemplateIds.indexOf(droppedId) >= 0) return;
+          // 计算插入位置
+          var afterEl = getDragAfterElement(workspaceTemplateList, e.clientY);
+          if (afterEl) {
+            var afterIndex = parseInt(afterEl.getAttribute('data-index') || '0');
+            workspaceTemplateIds.splice(afterIndex, 0, droppedId);
+          } else {
+            workspaceTemplateIds.push(droppedId);
+          }
+        } else if (source === 'template') {
+          // 模版内部排序：读取当前DOM顺序
+          var items = workspaceTemplateList.querySelectorAll('.workspace-template-item');
+          var newOrder = [];
+          items.forEach(function(el) {
+            var tid = el.getAttribute('data-template-id');
+            if (tid) newOrder.push(tid);
+          });
+          workspaceTemplateIds = newOrder;
+        }
+
+        saveWorkspaceTemplate();
+        renderWorkspaceTemplate();
+      });
+
+      /** 获取拖拽时应该插入到哪个元素之前 */
+      function getDragAfterElement(container, y) {
+        var elements = Array.from(container.querySelectorAll('.workspace-template-item:not(.dragging)'));
+        var closest = null;
+        var closestOffset = Number.NEGATIVE_INFINITY;
+        elements.forEach(function(child) {
+          var box = child.getBoundingClientRect();
+          var offset = y - box.top - box.height / 2;
+          if (offset < 0 && offset > closestOffset) {
+            closestOffset = offset;
+            closest = child;
+          }
+        });
+        return closest;
       }
 
       function openTemplateDialog(tpl) {
         if (tpl) {
           editingTemplateId = tpl.id;
-          templateDialogTitle.textContent = '\u7f16\u8f91\u6a21\u677f';
+          templateDialogTitle.textContent = '编辑规则';
           templateNameInput.value = tpl.name;
           templateContentInput.value = tpl.content;
         } else {
           editingTemplateId = null;
-          templateDialogTitle.textContent = '\u6dfb\u52a0\u6a21\u677f';
+          templateDialogTitle.textContent = '添加规则';
           templateNameInput.value = '';
           templateContentInput.value = '';
         }
@@ -2199,11 +2453,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           content: content,
           enabled: false
         };
-        // \u7f16\u8f91\u65f6\u4fdd\u7559\u539f\u6765\u7684\u542f\u7528\u72b6\u6001
-        if (editingTemplateId) {
-          var existing = currentTemplates.find(function(t) { return t.id === editingTemplateId; });
-          if (existing) template.enabled = existing.enabled;
-        }
         vscode.postMessage({ type: 'saveTemplate', template: template });
         closeTemplateDialog();
       });
