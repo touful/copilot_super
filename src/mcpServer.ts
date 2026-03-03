@@ -573,17 +573,24 @@ export class McpHttpServer {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let totalSize = 0;
+      let rejected = false;
       req.on('data', (chunk: Buffer) => {
+        if (rejected) return;
         totalSize += chunk.length;
         if (totalSize > MAX_REQUEST_BODY_SIZE) {
+          rejected = true;
           req.destroy();
-          reject(new Error(`Request body exceeds ${MAX_REQUEST_BODY_SIZE} bytes limit`));
+          reject(new Error(`请求体超过 ${MAX_REQUEST_BODY_SIZE} 字节限制`));
           return;
         }
         chunks.push(chunk);
       });
-      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-      req.on('error', reject);
+      req.on('end', () => {
+        if (!rejected) resolve(Buffer.concat(chunks).toString('utf-8'));
+      });
+      req.on('error', (err) => {
+        if (!rejected) reject(err);
+      });
     });
   }
 }

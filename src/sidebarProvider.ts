@@ -4,6 +4,7 @@
  */
 
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
 import { ToolCallParams } from './mcpServer';
 
 interface PendingRequest {
@@ -494,14 +495,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   // ============ Webview HTML ============
 
-  /** 生成 CSP nonce 随机字符串 */
+  /** 生成密码学安全的 CSP nonce 随机字符串 */
   private getNonce(): string {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < NONCE_LENGTH; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
+    return crypto.randomBytes(NONCE_LENGTH).toString('base64url');
   }
 
   private getHtmlContent(): string {
@@ -1610,9 +1606,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       const workspaceTemplateList = document.getElementById('workspaceTemplateList');
       const templateDropPlaceholder = document.getElementById('templateDropPlaceholder');
 
-      var currentTemplates = [];
-      var workspaceTemplateIds = []; // 工作区规则模版：有序的规则ID列表
-      var editingTemplateId = null; // null = 新增, string = 编辑
+      let currentTemplates = [];
+      let workspaceTemplateIds = []; // 工作区规则模版：有序的规则ID列表
+      let editingTemplateId = null; // null = 新增, string = 编辑
 
       // 功能4: 撤回功能引用
       const pendingSendArea = document.getElementById('pendingSendArea');
@@ -1706,7 +1702,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               updateButtonState();
               inputField.focus();
               // 移除 UI 中最后一条用户消息
-              var allUserMsgs = messagesEl.querySelectorAll('.message.user');
+              const allUserMsgs = messagesEl.querySelectorAll('.message.user');
               if (allUserMsgs.length > 0) {
                 allUserMsgs[allUserMsgs.length - 1].remove();
               }
@@ -1867,7 +1863,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
 
         // 设置延迟发送
-        var SEND_DELAY = ${SEND_DELAY_MS};
+        const SEND_DELAY = ${SEND_DELAY_MS};
         let remainingSeconds = Math.ceil(SEND_DELAY / 1000);
         pendingSendText.textContent = text.substring(0, 100) + (text.length > 100 ? '...' : '');
         pendingCountdown.textContent = remainingSeconds + '秒';
@@ -1928,13 +1924,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       function cancelPendingMessage() {
         if (pendingMessage) {
           // 保存待发送的原始文本
-          var recalledText = pendingMessage.text;
+          const recalledText = pendingMessage.text;
           clearTimeout(pendingMessage.timeout);
           clearInterval(pendingCountdownInterval);
           pendingMessage = null;
           clearPendingUI();
           // 移除乐观更新展示的用户消息
-          var allUserMsgs = messagesEl.querySelectorAll('.message.user');
+          const allUserMsgs = messagesEl.querySelectorAll('.message.user');
           if (allUserMsgs.length > 0) {
             allUserMsgs[allUserMsgs.length - 1].remove();
           }
@@ -1951,7 +1947,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
       }
 
-      sendBtn.addEventListener('click', sendMessage);
+      sendBtn.addEventListener('click', function() { sendMessage(false); });
 
       // 功能4: 立即发送按钮
       pendingSendNowBtn.addEventListener('click', () => {
@@ -2027,7 +2023,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
       // 显示状态消息（支持不同目标元素）
       function showStatusMessage(message, targetEl) {
-        var el = targetEl || rulesSavedMsg;
+        const el = targetEl || rulesSavedMsg;
         el.textContent = message;
         el.classList.add('show');
         setTimeout(() => {
@@ -2036,7 +2032,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
 
       /** 全局复用的 AudioContext 实例（延迟初始化） */
-      var sharedAudioCtx = null;
+      let sharedAudioCtx = null;
 
       /** 播放提示音效（使用 Web Audio API，复用 AudioContext 实例） */
       function playNotificationSound() {
@@ -2044,8 +2040,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           if (!sharedAudioCtx) {
             sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
           }
-          var oscillator = sharedAudioCtx.createOscillator();
-          var gainNode = sharedAudioCtx.createGain();
+          const oscillator = sharedAudioCtx.createOscillator();
+          const gainNode = sharedAudioCtx.createGain();
           oscillator.connect(gainNode);
           gainNode.connect(sharedAudioCtx.destination);
           oscillator.frequency.value = 800;
@@ -2080,11 +2076,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         // 如果没有选中文本，检测是否右键点击了消息气泡，自动提取整条消息的完整文本
         if (!savedSelectedText) {
-          var targetMessage = e.target.closest('.message');
+          const targetMessage = e.target.closest('.message');
           if (targetMessage) {
-            var titleEl = targetMessage.querySelector('.message-title');
-            var contentEl = targetMessage.querySelector('.message-content');
-            var parts = [];
+            const titleEl = targetMessage.querySelector('.message-title');
+            const contentEl = targetMessage.querySelector('.message-content');
+            const parts = [];
             // 提取标题文本（去掉 emoji 图标前缀也无妨，textContent 会包含）
             if (titleEl) { parts.push(titleEl.textContent.trim()); }
             if (contentEl) { parts.push(contentEl.textContent.trim()); }
@@ -2114,10 +2110,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
 
         // 计算菜单位置，确保不溢出视口
-        var menuWidth = 160;
-        var menuHeight = 80;
-        var x = e.clientX;
-        var y = e.clientY;
+        const menuWidth = 160;
+        const menuHeight = 80;
+        let x = e.clientX;
+        let y = e.clientY;
         if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 4;
         if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 4;
 
@@ -2182,6 +2178,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       /** 轻量级 Markdown 渲染（支持加粗、斜体、行内代码、代码块、列表、标题、编码处理） */
       function renderMarkdown(text) {
         if (!text) return '';
+
+        // 超长文本保护：跳过 Markdown 渲染，仅做 HTML 转义和换行处理
+        const MAX_RENDER_LENGTH = 50000;
+        if (text.length > MAX_RENDER_LENGTH) {
+          return escapeHtml(text).replace(/\\r\\n|\\r|\\n/g, '<br>');
+        }
         
         // 第一步：处理各种编码和转义序列
         // 统一处理 \\uXXXX, \\xXX, \\n, \\r, \\t, \\\\ 等转义
@@ -2270,32 +2272,32 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       function renderTemplateList() {
         templateList.innerHTML = '';
         currentTemplates.forEach(function(tpl) {
-          var item = document.createElement('div');
+          const item = document.createElement('div');
           item.className = 'template-item';
           item.draggable = true;
           item.setAttribute('data-template-id', tpl.id);
 
           // 拖拽手柄
-          var dragHandle = document.createElement('span');
+          const dragHandle = document.createElement('span');
           dragHandle.className = 'template-item-drag-handle';
           dragHandle.textContent = '⠿';
 
-          var info = document.createElement('div');
+          const info = document.createElement('div');
           info.className = 'template-item-info';
           info.innerHTML = '<div class="template-item-name">' + escapeHtml(tpl.name) + '</div>' +
             '<div class="template-item-preview">' + escapeHtml(tpl.content.substring(0, 50)) + '</div>';
 
-          var actions = document.createElement('div');
+          const actions = document.createElement('div');
           actions.className = 'template-item-actions';
 
-          var editBtn = document.createElement('button');
+          const editBtn = document.createElement('button');
           editBtn.textContent = '✏️';
           editBtn.title = '编辑';
           editBtn.addEventListener('click', function() {
             openTemplateDialog(tpl);
           });
 
-          var delBtn = document.createElement('button');
+          const delBtn = document.createElement('button');
           delBtn.textContent = '🗑️';
           delBtn.title = '删除';
           delBtn.addEventListener('click', function() {
@@ -2315,7 +2317,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           // 拖拽事件：从规则库拖到规则模版
           item.addEventListener('dragstart', function(e) {
             e.dataTransfer.setData('text/plain', tpl.id);
-            e.dataTransfer.setData('source', 'library');
+            e.dataTransfer.setData('application/x-source', 'library');
             item.classList.add('dragging');
           });
           item.addEventListener('dragend', function() {
@@ -2331,7 +2333,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         // 清空现有内容
         workspaceTemplateList.innerHTML = '';
         // 过滤出有效的规则ID
-        var validIds = workspaceTemplateIds.filter(function(id) {
+        const validIds = workspaceTemplateIds.filter(function(id) {
           return currentTemplates.some(function(t) { return t.id === id; });
         });
         // 如果有效ID和原始列表不同，更新
@@ -2341,31 +2343,31 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
 
         if (validIds.length === 0) {
-          var placeholder = document.createElement('div');
+          const placeholder = document.createElement('div');
           placeholder.className = 'template-drop-placeholder';
           placeholder.id = 'templateDropPlaceholder';
           placeholder.textContent = '将规则从下方拖到此处';
           workspaceTemplateList.appendChild(placeholder);
         } else {
           validIds.forEach(function(id, index) {
-            var tpl = currentTemplates.find(function(t) { return t.id === id; });
+            const tpl = currentTemplates.find(function(t) { return t.id === id; });
             if (!tpl) return;
 
-            var item = document.createElement('div');
+            const item = document.createElement('div');
             item.className = 'workspace-template-item';
             item.draggable = true;
             item.setAttribute('data-template-id', id);
             item.setAttribute('data-index', String(index));
 
-            var dragHandle = document.createElement('span');
+            const dragHandle = document.createElement('span');
             dragHandle.className = 'wt-drag-handle';
             dragHandle.textContent = '⠿';
 
-            var nameSpan = document.createElement('span');
+            const nameSpan = document.createElement('span');
             nameSpan.className = 'wt-name';
             nameSpan.textContent = tpl.name;
 
-            var removeBtn = document.createElement('button');
+            const removeBtn = document.createElement('button');
             removeBtn.className = 'wt-remove';
             removeBtn.textContent = '✕';
             removeBtn.title = '移除';
@@ -2382,8 +2384,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             // 拖拽排序事件
             item.addEventListener('dragstart', function(e) {
               e.dataTransfer.setData('text/plain', id);
-              e.dataTransfer.setData('source', 'template');
-              e.dataTransfer.setData('fromIndex', String(index));
+              e.dataTransfer.setData('application/x-source', 'template');
+              e.dataTransfer.setData('application/x-fromindex', String(index));
               item.classList.add('dragging');
             });
             item.addEventListener('dragend', function() {
@@ -2406,8 +2408,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         workspaceTemplateList.classList.add('drag-over');
 
         // 计算插入位置指示
-        var afterElement = getDragAfterElement(workspaceTemplateList, e.clientY);
-        var draggingEl = workspaceTemplateList.querySelector('.dragging');
+        const afterElement = getDragAfterElement(workspaceTemplateList, e.clientY);
+        const draggingEl = workspaceTemplateList.querySelector('.dragging');
         if (draggingEl) {
           if (afterElement) {
             workspaceTemplateList.insertBefore(draggingEl, afterElement);
@@ -2427,8 +2429,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       workspaceTemplateList.addEventListener('drop', function(e) {
         e.preventDefault();
         workspaceTemplateList.classList.remove('drag-over');
-        var droppedId = e.dataTransfer.getData('text/plain');
-        var source = e.dataTransfer.getData('source');
+        const droppedId = e.dataTransfer.getData('text/plain');
+        const source = e.dataTransfer.getData('application/x-source');
 
         if (!droppedId) return;
 
@@ -2436,19 +2438,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           // 从规则库拖入：检查是否已存在
           if (workspaceTemplateIds.indexOf(droppedId) >= 0) return;
           // 计算插入位置
-          var afterEl = getDragAfterElement(workspaceTemplateList, e.clientY);
+          const afterEl = getDragAfterElement(workspaceTemplateList, e.clientY);
           if (afterEl) {
-            var afterIndex = parseInt(afterEl.getAttribute('data-index') || '0');
+            const afterIndex = parseInt(afterEl.getAttribute('data-index') || '0');
             workspaceTemplateIds.splice(afterIndex, 0, droppedId);
           } else {
             workspaceTemplateIds.push(droppedId);
           }
         } else if (source === 'template') {
           // 模版内部排序：读取当前DOM顺序
-          var items = workspaceTemplateList.querySelectorAll('.workspace-template-item');
-          var newOrder = [];
+          const items = workspaceTemplateList.querySelectorAll('.workspace-template-item');
+          const newOrder = [];
           items.forEach(function(el) {
-            var tid = el.getAttribute('data-template-id');
+            const tid = el.getAttribute('data-template-id');
             if (tid) newOrder.push(tid);
           });
           workspaceTemplateIds = newOrder;
@@ -2460,12 +2462,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
       /** 获取拖拽时应该插入到哪个元素之前 */
       function getDragAfterElement(container, y) {
-        var elements = Array.from(container.querySelectorAll('.workspace-template-item:not(.dragging)'));
-        var closest = null;
-        var closestOffset = Number.NEGATIVE_INFINITY;
+        const elements = Array.from(container.querySelectorAll('.workspace-template-item:not(.dragging)'));
+        let closest = null;
+        let closestOffset = Number.NEGATIVE_INFINITY;
         elements.forEach(function(child) {
-          var box = child.getBoundingClientRect();
-          var offset = y - box.top - box.height / 2;
+          const box = child.getBoundingClientRect();
+          const offset = y - box.top - box.height / 2;
           if (offset < 0 && offset > closestOffset) {
             closestOffset = offset;
             closest = child;
@@ -2506,11 +2508,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       });
 
       dialogSaveBtn.addEventListener('click', function() {
-        var name = templateNameInput.value.trim();
-        var content = templateContentInput.value.trim();
+        const name = templateNameInput.value.trim();
+        const content = templateContentInput.value.trim();
         if (!name || !content) return;
 
-        var template = {
+        const template = {
           id: editingTemplateId || ('custom-' + Date.now()),
           name: name,
           content: content,
