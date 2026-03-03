@@ -517,6 +517,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   <div class="header" role="banner">
     <div class="status-dot" id="statusDot" role="status" aria-label="状态: 就绪"></div>
     <span class="header-text" id="statusText">MCP 服务就绪</span>
+    <span class="header-state-pill" id="headerStatePill" aria-live="polite">就绪</span>
     <span class="queue-badge" id="queueBadge" title="排队中的消息数" aria-live="polite">0</span>
     <button class="header-icon-btn" id="activateBtn" title="复制前置提示词" aria-label="复制前置提示词"><span role="img" aria-hidden="true">📋</span></button>
     <button class="header-icon-btn" id="clearBtn" title="清除对话" aria-label="清除对话"><span role="img" aria-hidden="true">🗑️</span></button>
@@ -572,6 +573,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         <button class="send-btn" id="sendBtn" disabled aria-label="发送消息">发送</button>
       </div>
       <div class="hint-text">Enter 发送 · Ctrl+Enter 直发 · Shift+Enter 换行 <span class="char-count" id="charCount"></span></div>
+      <div class="queue-hint" id="queueHint" role="status" aria-live="polite">当前无排队消息</div>
       <div class="status-message" id="chatStatusMsg" role="status"></div>
     </div>
   </div>
@@ -579,6 +581,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   <!-- 规则页面 -->
   <div class="tab-content" id="rulesTab" role="tabpanel" aria-labelledby="rulesTabBtn">
     <div class="settings-page">
+      <div class="section-step">
+        <span class="step-badge">步骤 1</span>
+        <span class="step-title">编辑工作区规则</span>
+      </div>
       <div class="setting-group">
         <label>工作区规则</label>
         <div class="hint">仅在当前工作区适用的规则文本，会添加到提示词前缀之后</div>
@@ -592,6 +598,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       <button class="save-rules-btn" id="saveRulesBtn">保存规则</button>
       <div class="status-message" id="rulesSavedMsg">规则已保存！</div>
 
+      <div class="section-step">
+        <span class="step-badge">步骤 2</span>
+        <span class="step-title">编排规则模板（拖拽排序）</span>
+      </div>
       <div class="setting-group">
         <label>规则模版</label>
         <div class="hint">从下方规则库拖入规则，支持拖拽排序，每个工作区独立缓存</div>
@@ -600,6 +610,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         </div>
       </div>
 
+      <div class="section-step">
+        <span class="step-badge">步骤 3</span>
+        <span class="step-title">管理规则库（新增/编辑/删除）</span>
+      </div>
       <div class="setting-group">
         <label>规则库</label>
         <div class="hint">所有可用的规则，拖拽到上方规则模版中使用</div>

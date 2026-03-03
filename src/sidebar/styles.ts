@@ -11,8 +11,8 @@ export function getSidebarStyles(): string {
       --spacing-lg: 16px;
       --radius: 8px;
       --font-xs: 10px;
-      --font-sm: 11px;
-      --font-md: 12px;
+      --font-sm: 12px;
+      --font-md: 13px;
       --font-lg: 13px;
       --font-xl: 14px;
       --transition-fast: 0.15s ease;
@@ -66,9 +66,22 @@ export function getSidebarStyles(): string {
     }
 
     .header-text {
-      font-size: 11px;
+      font-size: var(--font-sm);
       opacity: 0.8;
       flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .header-state-pill {
+      font-size: var(--font-xs);
+      color: var(--vscode-badge-foreground);
+      background: var(--vscode-badge-background);
+      border-radius: 999px;
+      padding: 2px 8px;
+      flex-shrink: 0;
+      max-width: 70px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -80,7 +93,9 @@ export function getSidebarStyles(): string {
       color: var(--vscode-foreground);
       cursor: pointer;
       font-size: 14px;
-      padding: 2px 6px;
+      min-width: 30px;
+      min-height: 30px;
+      padding: 4px 8px;
       border-radius: 4px;
       opacity: 0.6;
       transition: opacity 0.15s ease, background 0.15s ease;
@@ -184,6 +199,7 @@ export function getSidebarStyles(): string {
 
     .message-title {
       font-weight: 600;
+      font-size: var(--font-md);
       margin-bottom: var(--spacing-xs);
       display: flex;
       align-items: center;
@@ -195,13 +211,14 @@ export function getSidebarStyles(): string {
     }
 
     .message-content {
-      line-height: 1.5;
+      font-size: var(--font-md);
+      line-height: 1.6;
       white-space: pre-wrap;
     }
 
     .message-time {
       font-size: var(--font-xs);
-      opacity: 0.5;
+      opacity: 0.6;
       margin-top: var(--spacing-xs);
       text-align: right;
     }
@@ -234,13 +251,13 @@ export function getSidebarStyles(): string {
     }
 
     .choice-btn {
-      padding: var(--spacing-xs) var(--spacing-md);
+      padding: 6px var(--spacing-md);
       border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
       border-radius: var(--radius);
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
       cursor: pointer;
-      font-size: 12px;
+      font-size: var(--font-sm);
       transition: all 0.15s ease;
       white-space: nowrap;
     }
@@ -298,9 +315,10 @@ export function getSidebarStyles(): string {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
       cursor: pointer;
-      font-size: 13px;
+      font-size: var(--font-md);
       font-weight: 500;
-      height: 36px;
+      min-width: 72px;
+      height: 38px;
       white-space: nowrap;
       transition: background 0.15s ease;
     }
@@ -315,14 +333,28 @@ export function getSidebarStyles(): string {
     }
 
     .hint-text {
-      font-size: var(--font-xs);
-      opacity: 0.5;
+      font-size: var(--font-sm);
+      opacity: 0.65;
       margin-top: var(--spacing-xs);
-      text-align: center;
+      text-align: left;
       display: flex;
-      justify-content: center;
+      justify-content: flex-start;
       align-items: center;
       gap: var(--spacing-sm);
+    }
+
+    .queue-hint {
+      margin-top: 6px;
+      font-size: var(--font-sm);
+      opacity: 0.72;
+      color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+      min-height: 16px;
+    }
+
+    .queue-hint.active {
+      color: var(--vscode-focusBorder);
+      opacity: 1;
+      font-weight: 600;
     }
 
     /* C3: 字数统计 */
@@ -448,14 +480,38 @@ export function getSidebarStyles(): string {
 
     .setting-group label {
       font-weight: 600;
-      font-size: 12px;
+      font-size: var(--font-md);
       color: var(--vscode-foreground);
     }
 
     .setting-group .hint {
-      font-size: 10px;
+      font-size: var(--font-sm);
       opacity: 0.6;
       line-height: 1.4;
+    }
+
+    .section-step {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      margin-top: 2px;
+      margin-bottom: calc(var(--spacing-sm) * -1);
+    }
+
+    .step-badge {
+      font-size: var(--font-xs);
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--vscode-focusBorder) 20%, transparent);
+      color: var(--vscode-focusBorder);
+      border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent);
+    }
+
+    .step-title {
+      font-size: var(--font-sm);
+      opacity: 0.9;
+      font-weight: 600;
     }
 
     .rule-textarea {
@@ -483,10 +539,11 @@ export function getSidebarStyles(): string {
       border: none;
       border-radius: var(--radius);
       cursor: pointer;
-      font-size: 12px;
+      font-size: var(--font-sm);
       font-weight: 600;
       transition: background 0.15s ease;
       align-self: flex-start;
+      min-height: 34px;
     }
 
     .save-rules-btn:hover {
@@ -574,7 +631,9 @@ export function getSidebarStyles(): string {
       border: none;
       color: var(--vscode-foreground);
       cursor: pointer;
-      padding: 2px 4px;
+      min-width: 28px;
+      min-height: 28px;
+      padding: 4px 6px;
       border-radius: 3px;
       font-size: 12px;
       opacity: 0.5;
@@ -602,6 +661,14 @@ export function getSidebarStyles(): string {
     .workspace-template-list.drag-over {
       border-color: var(--vscode-button-background);
       background: color-mix(in srgb, var(--vscode-focusBorder) 15%, transparent);
+    }
+
+    .workspace-template-item.drop-target-top {
+      box-shadow: inset 0 2px 0 0 var(--vscode-focusBorder);
+    }
+
+    .workspace-template-item.drop-target-bottom {
+      box-shadow: inset 0 -2px 0 0 var(--vscode-focusBorder);
     }
 
     .template-drop-placeholder {
@@ -653,7 +720,9 @@ export function getSidebarStyles(): string {
       border: none;
       color: var(--vscode-foreground);
       cursor: pointer;
-      padding: 2px 4px;
+      min-width: 28px;
+      min-height: 28px;
+      padding: 4px 6px;
       border-radius: 3px;
       font-size: 12px;
       opacity: 0.5;
@@ -863,6 +932,20 @@ export function getSidebarStyles(): string {
       flex-direction: column;
       gap: var(--spacing-xs);
       animation: slideUp 0.2s ease-out;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .pending-send-area::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 2px;
+      width: 100%;
+      background: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
+      transform-origin: left;
+      transform: scaleX(0);
     }
 
     @keyframes slideUp {
@@ -870,8 +953,17 @@ export function getSidebarStyles(): string {
       to { opacity: 1; transform: translateY(0); }
     }
 
+    @keyframes pendingProgress {
+      from { transform: scaleX(1); }
+      to { transform: scaleX(0); }
+    }
+
     .pending-send-area.show {
       display: flex;
+    }
+
+    .pending-send-area.show::after {
+      animation: pendingProgress 5s linear forwards;
     }
 
     .pending-send-header {
@@ -964,9 +1056,9 @@ export function getSidebarStyles(): string {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 6px 14px;
+      padding: 8px 14px;
       cursor: pointer;
-      font-size: 12px;
+      font-size: var(--font-sm);
       color: var(--vscode-menu-foreground, var(--vscode-foreground));
       transition: background 0.1s;
       white-space: nowrap;
@@ -1003,9 +1095,9 @@ export function getSidebarStyles(): string {
       display: none;
       background: var(--vscode-badge-background);
       color: var(--vscode-badge-foreground);
-      font-size: 10px;
+      font-size: var(--font-xs);
       font-weight: 600;
-      padding: 1px 6px;
+      padding: 2px 8px;
       border-radius: 10px;
       flex-shrink: 0;
     }

@@ -16,6 +16,7 @@ export function getSidebarScript(sendDelayMs: number): string {
       const sendBtn = document.getElementById('sendBtn');
       const statusDot = document.getElementById('statusDot');
       const statusText = document.getElementById('statusText');
+      const headerStatePill = document.getElementById('headerStatePill');
       const activateBtn = document.getElementById('activateBtn');
 
       // 标签页和规则管理引用
@@ -66,6 +67,7 @@ export function getSidebarScript(sendDelayMs: number): string {
       const ctxCopy = document.getElementById('ctxCopy');
       const ctxRecallQueued = document.getElementById('ctxRecallQueued');
       const queueBadge = document.getElementById('queueBadge');
+      const queueHint = document.getElementById('queueHint');
       const chatStatusMsg = document.getElementById('chatStatusMsg');
       const charCount = document.getElementById('charCount');
 
@@ -135,7 +137,7 @@ export function getSidebarScript(sendDelayMs: number): string {
           case 'rulesSaved':
             // 显示规则已保存的提示
             setSaveBtnSuccess(saveRulesBtn);
-            showStatusMessage('规则已保存！', rulesSavedMsg);
+            showStatusMessage('保存规则成功', rulesSavedMsg);
             break;
           case 'syncTemplates':
             // 同步规则库
@@ -157,7 +159,7 @@ export function getSidebarScript(sendDelayMs: number): string {
           case 'settingsSaved':
             // 显示设置已保存提示
             setSaveBtnSuccess(saveSettingsBtn);
-            showStatusMessage('设置已保存！', settingsSavedMsg);
+            showStatusMessage('保存设置成功', settingsSavedMsg);
             break;
           case 'playSound':
             // 播放提示音效
@@ -240,9 +242,11 @@ export function getSidebarScript(sendDelayMs: number): string {
         statusDot.className = 'status-dot' + (waiting ? ' waiting' : '');
         if (waiting) {
           statusText.textContent = 'Copilot 需要您的输入...';
+          if (headerStatePill) headerStatePill.textContent = '等待输入';
           statusDot.setAttribute('aria-label', '状态: 等待输入');
         } else {
           statusText.textContent = '等待 Copilot 请求...';
+          if (headerStatePill) headerStatePill.textContent = queueCount > 0 ? '队列中' : '就绪';
           statusDot.setAttribute('aria-label', '状态: 就绪');
         }
       }
@@ -597,9 +601,31 @@ export function getSidebarScript(sendDelayMs: number): string {
         if (queueCount > 0) {
           queueBadge.textContent = '队列: ' + queueCount;
           queueBadge.classList.add('show');
+          if (queueHint) {
+            queueHint.textContent = '已排队 ' + queueCount + ' 条消息，下次 Copilot 调用将自动发送。';
+            queueHint.classList.add('active');
+          }
+          if (headerStatePill && !isWaiting) {
+            headerStatePill.textContent = '队列中';
+          }
         } else {
           queueBadge.classList.remove('show');
+          if (queueHint) {
+            queueHint.textContent = '当前无排队消息';
+            queueHint.classList.remove('active');
+          }
+          if (headerStatePill && !isWaiting) {
+            headerStatePill.textContent = '就绪';
+          }
         }
+      }
+
+      function clearDropTargetClasses() {
+        const marks = workspaceTemplateList.querySelectorAll('.drop-target-top, .drop-target-bottom');
+        marks.forEach(function(el) {
+          el.classList.remove('drop-target-top');
+          el.classList.remove('drop-target-bottom');
+        });
       }
 
       // ====== 自定义右键菜单逻辑 ======
@@ -966,6 +992,15 @@ export function getSidebarScript(sendDelayMs: number): string {
 
         // 计算插入位置指示
         const afterElement = getDragAfterElement(workspaceTemplateList, e.clientY);
+        clearDropTargetClasses();
+        if (afterElement) {
+          afterElement.classList.add('drop-target-top');
+        } else {
+          const tail = workspaceTemplateList.querySelector('.workspace-template-item:last-child');
+          if (tail) {
+            tail.classList.add('drop-target-bottom');
+          }
+        }
         const draggingEl = workspaceTemplateList.querySelector('.dragging');
         if (draggingEl) {
           if (afterElement) {
@@ -980,12 +1015,14 @@ export function getSidebarScript(sendDelayMs: number): string {
         // 仅当真正离开容器时移除样式
         if (!workspaceTemplateList.contains(e.relatedTarget)) {
           workspaceTemplateList.classList.remove('drag-over');
+          clearDropTargetClasses();
         }
       });
 
       workspaceTemplateList.addEventListener('drop', function(e) {
         e.preventDefault();
         workspaceTemplateList.classList.remove('drag-over');
+        clearDropTargetClasses();
         const droppedId = e.dataTransfer.getData('text/plain');
         const source = e.dataTransfer.getData('application/x-source');
 
