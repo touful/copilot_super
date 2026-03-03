@@ -514,48 +514,43 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   <style>${getSidebarStyles()}</style>
 </head>
 <body>
-  <div class="header">
-    <div class="status-dot" id="statusDot"></div>
+  <div class="header" role="banner">
+    <div class="status-dot" id="statusDot" role="status" aria-label="状态: 就绪"></div>
     <span class="header-text" id="statusText">MCP 服务就绪</span>
-    <span class="queue-badge" id="queueBadge" title="排队中的消息数">0</span>
-    <button class="header-icon-btn" id="clearBtn" title="清除对话">🗑️</button>
+    <span class="queue-badge" id="queueBadge" title="排队中的消息数" aria-live="polite">0</span>
+    <button class="header-icon-btn" id="activateBtn" title="复制前置提示词" aria-label="复制前置提示词"><span role="img" aria-hidden="true">📋</span></button>
+    <button class="header-icon-btn" id="clearBtn" title="清除对话" aria-label="清除对话"><span role="img" aria-hidden="true">🗑️</span></button>
   </div>
 
   <!-- 标签页导航 -->
-  <div class="tabs">
-    <button class="tab-btn active" data-tab="chat" id="chatTabBtn">💬 对话</button>
-    <button class="tab-btn" data-tab="rules" id="rulesTabBtn">📏 规则</button>
-    <button class="tab-btn" data-tab="settings" id="settingsTabBtn">⚙️ 设置</button>
+  <div class="tabs" role="tablist" aria-label="面板导航">
+    <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="chatTab" data-tab="chat" id="chatTabBtn"><span role="img" aria-hidden="true">💬</span> 对话</button>
+    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="rulesTab" data-tab="rules" id="rulesTabBtn"><span role="img" aria-hidden="true">📏</span> 规则</button>
+    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="settingsTab" data-tab="settings" id="settingsTabBtn"><span role="img" aria-hidden="true">⚙️</span> 设置</button>
   </div>
 
   <!-- 对话页面 -->
-  <div class="tab-content active" id="chatTab">
-    <button class="activate-btn" id="activateBtn">
-      <span class="icon">📋</span>
-      复制前置提示词 (激活)
-    </button>
-
-    <div class="messages" id="messages">
+  <div class="tab-content active" id="chatTab" role="tabpanel" aria-labelledby="chatTabBtn">
+    <div class="messages" id="messages" role="log" aria-live="polite">
       <div class="empty-state" id="emptyState">
-        <div class="icon">📡</div>
+        <div class="icon" role="img" aria-label="信号">📡</div>
         <div class="title">Copilot Super</div>
         <div class="desc">
           MCP 服务已就绪，等待 Copilot 连接<br><br>
-          <strong>使用方法:</strong><br>
-          1. 在 Copilot Chat 中发起对话<br>
-          2. Copilot 会自动调用 MCP 工具<br>
-          3. 在此面板输入指令继续交互<br><br>
-          <em>Enter 发送 · Ctrl+Enter 直接发送 · Shift+Enter 换行</em>
+          <strong>快速开始：</strong><br>
+          1. 点击上方 <span role="img" aria-hidden="true">📋</span> 复制提示词<br>
+          2. 在 Copilot Chat 中粘贴并发送<br>
+          3. 在此面板输入指令交互
         </div>
       </div>
     </div>
 
     <div class="choices" id="choices"></div>
 
-    <!-- 功能4: 待发送消息提示区 -->
-    <div class="pending-send-area" id="pendingSendArea">
+    <!-- 功能4: 待发送消息浮层（toast 样式） -->
+    <div class="pending-send-area" id="pendingSendArea" role="alert">
       <div class="pending-send-header">
-        <div class="pending-send-title">⏱️ 消息即将发送，可撤回</div>
+        <div class="pending-send-title"><span role="img" aria-hidden="true">⏱️</span> 即将发送</div>
         <div class="pending-countdown" id="pendingCountdown">5秒</div>
       </div>
       <div class="pending-send-text" id="pendingSendText"></div>
@@ -572,16 +567,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           id="inputField"
           placeholder="输入你的指令..."
           rows="1"
+          aria-label="消息输入框"
         ></textarea>
-        <button class="send-btn" id="sendBtn" disabled>发送</button>
+        <button class="send-btn" id="sendBtn" disabled aria-label="发送消息">发送</button>
       </div>
-      <div class="hint-text">Enter 发送 · Ctrl+Enter 直发 · Shift+Enter 换行</div>
-      <div class="status-message" id="chatStatusMsg"></div>
+      <div class="hint-text">Enter 发送 · Ctrl+Enter 直发 · Shift+Enter 换行 <span class="char-count" id="charCount"></span></div>
+      <div class="status-message" id="chatStatusMsg" role="status"></div>
     </div>
   </div>
 
   <!-- 规则页面 -->
-  <div class="tab-content" id="rulesTab">
+  <div class="tab-content" id="rulesTab" role="tabpanel" aria-labelledby="rulesTabBtn">
     <div class="settings-page" id="rulesPage">
       <div class="setting-group">
         <label>工作区规则</label>
@@ -614,7 +610,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   </div>
 
   <!-- 设置页面 -->
-  <div class="tab-content" id="settingsTab">
+  <div class="tab-content" id="settingsTab" role="tabpanel" aria-labelledby="settingsTabBtn">
     <div class="settings-page" id="settingsPage">
       <div class="setting-group">
         <label>提示信息设置</label>
@@ -623,7 +619,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
       <div class="setting-group">
         <div class="setting-toggle">
-          <input type="checkbox" id="settingNotifyOnToolCall" checked>
+          <label class="toggle-switch" for="settingNotifyOnToolCall">
+            <input type="checkbox" id="settingNotifyOnToolCall" checked>
+            <span class="toggle-slider"></span>
+          </label>
           <div class="setting-toggle-info">
             <label for="settingNotifyOnToolCall">允许 MCP 调用时提示信息</label>
             <div class="hint">当 Copilot 通过 MCP 工具调用时，在右下角显示通知</div>
@@ -633,7 +632,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
       <div class="setting-group">
         <div class="setting-toggle">
-          <input type="checkbox" id="settingSoundOnToolCall">
+          <label class="toggle-switch" for="settingSoundOnToolCall">
+            <input type="checkbox" id="settingSoundOnToolCall">
+            <span class="toggle-slider"></span>
+          </label>
           <div class="setting-toggle-info">
             <label for="settingSoundOnToolCall">允许 MCP 调用时提示音</label>
             <div class="hint">当 Copilot 通过 MCP 工具调用时，播放提示音效</div>
@@ -643,7 +645,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
       <div class="setting-group">
         <div class="setting-toggle">
-          <input type="checkbox" id="settingShowPluginNotifications" checked>
+          <label class="toggle-switch" for="settingShowPluginNotifications">
+            <input type="checkbox" id="settingShowPluginNotifications" checked>
+            <span class="toggle-slider"></span>
+          </label>
           <div class="setting-toggle-info">
             <label for="settingShowPluginNotifications">允许插件发送 VS Code 提示</label>
             <div class="hint">允许本插件在各种操作时发送 VS Code 通知消息</div>
@@ -657,7 +662,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   </div>
 
   <!-- 模板编辑弹窗 -->
-  <div class="template-dialog-overlay" id="templateDialogOverlay">
+  <div class="template-dialog-overlay" id="templateDialogOverlay" role="dialog" aria-modal="true" aria-labelledby="templateDialogTitle">
     <div class="template-dialog">
       <h3 id="templateDialogTitle">添加规则</h3>
       <input type="text" id="templateNameInput" placeholder="规则名称...">
@@ -670,14 +675,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   </div>
 
   <!-- 自定义右键菜单 -->
-  <div class="context-menu" id="contextMenu">
-    <div class="context-menu-item" id="ctxCopy">
-      <span class="icon">📋</span>
+  <div class="context-menu" id="contextMenu" role="menu" aria-label="操作菜单">
+    <div class="context-menu-item" id="ctxCopy" role="menuitem" tabindex="-1">
+      <span class="icon" role="img" aria-hidden="true">📋</span>
       <span>复制</span>
     </div>
-    <div class="context-menu-separator"></div>
-    <div class="context-menu-item" id="ctxRecallQueued">
-      <span class="icon">↩️</span>
+    <div class="context-menu-separator" role="separator"></div>
+    <div class="context-menu-item" id="ctxRecallQueued" role="menuitem" tabindex="-1">
+      <span class="icon" role="img" aria-hidden="true">↩️</span>
       <span>撤回排队消息</span>
     </div>
   </div>

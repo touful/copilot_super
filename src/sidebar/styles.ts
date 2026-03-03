@@ -10,6 +10,14 @@ export function getSidebarStyles(): string {
       --spacing-md: 12px;
       --spacing-lg: 16px;
       --radius: 8px;
+      --font-xs: 10px;
+      --font-sm: 11px;
+      --font-md: 12px;
+      --font-lg: 13px;
+      --font-xl: 14px;
+      --transition-fast: 0.15s ease;
+      --transition-normal: 0.2s ease;
+      --transition-slow: 0.3s ease;
     }
 
     * {
@@ -84,31 +92,19 @@ export function getSidebarStyles(): string {
       background: var(--vscode-toolbar-hoverBackground);
     }
 
-    /* ====== 激活按钮 ====== */
-    .activate-btn {
-      margin: var(--spacing-sm);
-      padding: var(--spacing-md);
-      background: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
-      border: none;
-      border-radius: var(--radius);
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      transition: background 0.2s;
-      flex-shrink: 0;
+    /* ====== C6: 保存按钮 loading 状态 ====== */
+    .save-rules-btn.loading,
+    .save-rules-btn.success {
+      pointer-events: none;
+      opacity: 0.8;
     }
 
-    .activate-btn:hover {
-      background: var(--vscode-button-hoverBackground);
+    .save-rules-btn.loading::after {
+      content: ' ⏳';
     }
 
-    .activate-btn .icon {
-      font-size: 16px;
+    .save-rules-btn.success::after {
+      content: ' ✓';
     }
 
     /* ====== 消息区域 ====== */
@@ -146,12 +142,44 @@ export function getSidebarStyles(): string {
     .message.copilot {
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-panel-border);
+      border-left: 3px solid var(--vscode-focusBorder);
+      position: relative;
+    }
+
+    /* B2: 消息悬浮工具栏 */
+    .message-hover-toolbar {
+      display: none;
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      gap: 2px;
+    }
+
+    .message:hover .message-hover-toolbar {
+      display: flex;
+    }
+
+    .message-hover-toolbar button {
+      background: var(--vscode-toolbar-hoverBackground);
+      border: 1px solid var(--vscode-panel-border);
+      color: var(--vscode-foreground);
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: var(--font-xs);
+      opacity: 0.7;
+      transition: opacity var(--transition-fast);
+    }
+
+    .message-hover-toolbar button:hover {
+      opacity: 1;
     }
 
     .message.user {
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
       margin-left: 20%;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
     }
 
     .message-title {
@@ -172,10 +200,28 @@ export function getSidebarStyles(): string {
     }
 
     .message-time {
-      font-size: 10px;
+      font-size: var(--font-xs);
       opacity: 0.5;
       margin-top: var(--spacing-xs);
       text-align: right;
+    }
+
+    /* ====== B7: 日期分隔线 ====== */
+    .date-separator {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-sm) 0;
+      font-size: var(--font-xs);
+      opacity: 0.5;
+    }
+
+    .date-separator::before,
+    .date-separator::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--vscode-panel-border);
     }
 
     /* ====== 选项按钮区 ====== */
@@ -269,10 +315,26 @@ export function getSidebarStyles(): string {
     }
 
     .hint-text {
-      font-size: 10px;
+      font-size: var(--font-xs);
       opacity: 0.5;
       margin-top: var(--spacing-xs);
       text-align: center;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: var(--spacing-sm);
+    }
+
+    /* C3: 字数统计 */
+    .char-count {
+      font-size: var(--font-xs);
+      opacity: 0.6;
+      margin-left: auto;
+    }
+
+    .char-count.warning {
+      color: var(--vscode-editorWarning-foreground);
+      opacity: 1;
     }
 
     /* ====== 空状态 ====== */
@@ -333,6 +395,23 @@ export function getSidebarStyles(): string {
       border-bottom-color: var(--vscode-focusBorder);
       color: var(--vscode-focusBorder);
       opacity: 1;
+    }
+
+    /* C5: 标签页未读指示（使用 ::after 伪元素，无需额外 DOM） */
+    .tab-btn {
+      position: relative;
+    }
+
+    .tab-btn.has-unread::after {
+      content: '';
+      display: block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--vscode-errorForeground);
+      position: absolute;
+      top: 6px;
+      right: 12px;
     }
 
     /* ====== 功能3: 设置页面 ====== */
@@ -510,27 +589,37 @@ export function getSidebarStyles(): string {
       background: var(--vscode-toolbar-hoverBackground);
     }
 
-    /* ====== 规则模版（工作区拖拽区域） ====== */
+    /* ====== B6: 规则模版（工作区拖拽区域） ====== */
     .workspace-template-list {
       display: flex;
       flex-direction: column;
       gap: 4px;
       min-height: 48px;
-      border: 2px dashed var(--vscode-panel-border);
+      border: 2px dashed var(--vscode-focusBorder);
       border-radius: var(--radius);
       padding: var(--spacing-sm);
-      transition: border-color 0.2s, background 0.2s;
+      background: color-mix(in srgb, var(--vscode-focusBorder) 5%, transparent);
+      transition: border-color var(--transition-normal), background var(--transition-normal);
     }
 
     .workspace-template-list.drag-over {
-      border-color: var(--vscode-focusBorder);
-      background: color-mix(in srgb, var(--vscode-focusBorder) 10%, transparent);
+      border-color: var(--vscode-button-background);
+      background: color-mix(in srgb, var(--vscode-focusBorder) 15%, transparent);
+    }
+
+    /* C1: 拖拽插入位置指示 */
+    .drag-insert-indicator {
+      height: 2px;
+      background: var(--vscode-focusBorder);
+      border-radius: 1px;
+      margin: -1px 0;
+      pointer-events: none;
     }
 
     .template-drop-placeholder {
       text-align: center;
       padding: var(--spacing-md);
-      font-size: 11px;
+      font-size: var(--font-sm);
       opacity: 0.5;
     }
 
@@ -705,10 +794,54 @@ export function getSidebarStyles(): string {
       padding: var(--spacing-sm) 0;
     }
 
-    .setting-toggle input[type="checkbox"] {
-      margin-top: 2px;
+    /* B5: Toggle switch 组件 */
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 36px;
+      height: 20px;
       flex-shrink: 0;
+      margin-top: 1px;
       cursor: pointer;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      inset: 0;
+      background: var(--vscode-input-border);
+      border-radius: 10px;
+      transition: background var(--transition-fast);
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      left: 3px;
+      bottom: 3px;
+      background: var(--vscode-foreground);
+      border-radius: 50%;
+      transition: transform var(--transition-fast);
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--vscode-focusBorder);
+    }
+
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(16px);
+    }
+
+    .toggle-switch input:focus-visible + .toggle-slider {
+      outline: 2px solid var(--vscode-focusBorder);
+      outline-offset: 2px;
     }
 
     .setting-toggle-info {
@@ -731,15 +864,22 @@ export function getSidebarStyles(): string {
     }
 
     /* ====== 功能4: 撤回功能 ====== */
+    /* B4/C7: 待发送 toast 样式（温和色调） */
     .pending-send-area {
-      padding: var(--spacing-md);
-      background: var(--vscode-editorWarning-background);
-      border: 1px solid var(--vscode-editorWarning-border);
+      padding: var(--spacing-sm) var(--spacing-md);
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-focusBorder);
       border-radius: var(--radius);
-      margin-bottom: var(--spacing-md);
+      margin: 0 var(--spacing-md) var(--spacing-sm);
       display: none;
       flex-direction: column;
-      gap: var(--spacing-sm);
+      gap: var(--spacing-xs);
+      animation: slideUp 0.2s ease-out;
+    }
+
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     .pending-send-area.show {
@@ -754,26 +894,28 @@ export function getSidebarStyles(): string {
     }
 
     .pending-send-title {
-      font-size: 12px;
+      font-size: var(--font-sm);
       font-weight: 600;
-      color: var(--vscode-editorWarning-foreground);
+      color: var(--vscode-foreground);
     }
 
     .pending-countdown {
-      font-size: 11px;
-      color: var(--vscode-editorWarning-foreground);
+      font-size: var(--font-sm);
+      color: var(--vscode-focusBorder);
       min-width: 30px;
       text-align: right;
+      font-weight: 600;
     }
 
     .pending-send-text {
-      font-size: 11px;
-      color: var(--vscode-editorWarning-foreground);
-      padding: var(--spacing-sm);
-      background: rgba(0, 0, 0, 0.2);
+      font-size: var(--font-sm);
+      color: var(--vscode-foreground);
+      opacity: 0.8;
+      padding: var(--spacing-xs) var(--spacing-sm);
+      background: var(--vscode-textCodeBlock-background);
       border-radius: 3px;
       word-break: break-word;
-      max-height: 60px;
+      max-height: 40px;
       overflow-y: auto;
       line-height: 1.4;
     }

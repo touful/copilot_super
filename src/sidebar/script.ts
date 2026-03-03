@@ -68,14 +68,46 @@ export function getSidebarScript(sendDelayMs: number): string {
       const ctxRecallQueued = document.getElementById('ctxRecallQueued');
       const queueBadge = document.getElementById('queueBadge');
       const chatStatusMsg = document.getElementById('chatStatusMsg');
+      const charCount = document.getElementById('charCount');
 
       let isWaiting = false; // 是否正在等待用户输入以回复当前 Copilot 请求
       let queueCount = 0; // 队列中待消费的消息数量
       let savedSelectedText = ''; // 右键菜单打开时保存的选中文本
+      let activeTab = 'chat'; // 当前活动标签页
+      let lastMessageDate = ''; // 上一条消息的日期（用于日期分隔符）
+      const MAX_INPUT_LENGTH = 5000; // 输入框最大字符数
       
       // 功能4: 待发送消息的状态
       let pendingMessage = null; // { text: string, timeout: NodeJS.Timeout }
       let pendingCountdownInterval = null;
+
+      // D2: 预编译正则和常量（避免在 renderMarkdown 中反复创建）
+      const MD_MAX_RENDER_LENGTH = 50000;
+      const backtick = String.fromCharCode(96);
+      const tripleBacktick = backtick + backtick + backtick;
+      const RE_CODE_BLOCK = new RegExp(tripleBacktick + '([\\\\s\\\\S]*?)' + tripleBacktick, 'g');
+      const RE_INLINE_CODE = new RegExp(backtick + '([^' + backtick + ']+)' + backtick, 'g');
+      const RE_ESCAPE = /\\\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|n|r|t|\\\\)/g;
+      const RE_URL_ENCODE = /(?:%[0-9a-fA-F]{2}){2,}/g;
+      const RE_HTML_HEX_ENTITY = /&#x([0-9a-fA-F]+);/g;
+      const RE_HTML_DEC_ENTITY = /&#(\\d+);/g;
+      const RE_NEWLINE = /\\r\\n|\\r|\\n/g;
+
+      /** 解码转义序列（供 renderMarkdown 使用） */
+      function decodeEscape(match, seq) {
+        if (seq === 'n') return String.fromCharCode(10);
+        if (seq === 'r') return String.fromCharCode(13);
+        if (seq === 't') return String.fromCharCode(9);
+        if (seq.charAt(0) === 'u') {
+          try { return String.fromCharCode(parseInt(seq.substring(1), 16)); }
+          catch(e) { return match; }
+        }
+        if (seq.charAt(0) === 'x') {
+          try { return String.fromCharCode(parseInt(seq.substring(1), 16)); }
+          catch(e) { return match; }
+        }
+        return String.fromCharCode(92);
+      }
 
       // ====== 消息处理 ======
       window.addEventListener('message', (event) => {
@@ -103,6 +135,7 @@ export function getSidebarScript(sendDelayMs: number): string {
             break;
           case 'rulesSaved':
             // 显示规则已保存的提示
+            setSaveBtnSuccess(saveRulesBtn);
             showStatusMessage('规则已保存！', rulesSavedMsg);
             break;
           case 'syncTemplates':
@@ -124,6 +157,7 @@ export function getSidebarScript(sendDelayMs: number): string {
             break;
           case 'settingsSaved':
             // 显示设置已保存提示
+            setSaveBtnSuccess(saveSettingsBtn);
             showStatusMessage('设置已保存！', settingsSavedMsg);
             break;
           case 'playSound':
@@ -207,14 +241,27 @@ export function getSidebarScript(sendDelayMs: number): string {
         statusDot.className = 'status-dot' + (waiting ? ' waiting' : '');
         if (waiting) {
           statusText.textContent = 'Copilot 需要您的输入...';
-          // 输入框和按钮保持可用
+          statusDot.setAttribute('aria-label', '状态: 等待输入');
         } else {
           statusText.textContent = '等待 Copilot 请求...';
+          statusDot.setAttribute('aria-label', '状态: 就绪');
         }
       }
 
       // ====== UI 操作 ======
       function addMessage(role, title, content, timestamp) {
+        // B7: 日期分隔符 — 跨天显示日期标签
+        if (timestamp) {
+          const dateStr = new Date(timestamp).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+          if (lastMessageDate && dateStr !== lastMessageDate) {
+            const sep = document.createElement('div');
+            sep.className = 'date-separator';
+            sep.textContent = dateStr;
+            messagesEl.appendChild(sep);
+          }
+          lastMessageDate = dateStr;
+        }
+
         const div = document.createElement('div');
         div.className = 'message ' + role;
 
@@ -231,8 +278,29 @@ export function getSidebarScript(sendDelayMs: number): string {
             '<div class="message-time">' + time + '</div>';
         }
 
+        // C2: 悬浮工具栏 — 鼠标悬停时显示复制按钮
+        const toolbar = document.createElement('div');
+        toolbar.className = 'message-hover-toolbar';
+        const copyBtn = document.createElement('button');
+        copyBtn.textContent = '📋';
+        copyBtn.title = '复制消息';
+        copyBtn.addEventListener('click', function() {
+          const contentEl = div.querySelector('.message-content');
+          const text = contentEl ? contentEl.textContent : '';
+          if (text) {
+            vscode.postMessage({ type: 'copyText', text: text });
+          }
+        });
+        toolbar.appendChild(copyBtn);
+        div.appendChild(toolbar);
+
         messagesEl.appendChild(div);
         messagesEl.scrollTop = messagesEl.scrollHeight;
+
+        // C5: 非对话标签页收到新消息时显示未读小红点
+        if (activeTab !== 'chat' && role === 'copilot') {
+          chatTabBtn.classList.add('has-unread');
+        }
       }
 
       function showChoices(choices) {
@@ -254,6 +322,7 @@ export function getSidebarScript(sendDelayMs: number): string {
           });
       function clearMessages() {
         messagesEl.innerHTML = '';
+        lastMessageDate = ''; // 重置日期分隔符
         if (emptyStateEl) {
           emptyStateEl.style.display = '';
           messagesEl.appendChild(emptyStateEl);
@@ -267,6 +336,7 @@ export function getSidebarScript(sendDelayMs: number): string {
         if (emptyStateEl) emptyStateEl.style.display = 'none';
         
         // 清空并重新渲染
+        lastMessageDate = ''; // 重置日期分隔符
         const existingEmpty = messagesEl.querySelector('.empty-state');
         messagesEl.innerHTML = '';
         if (existingEmpty) messagesEl.appendChild(existingEmpty);
@@ -411,6 +481,13 @@ export function getSidebarScript(sendDelayMs: number): string {
 
       // 标签页切换
       function switchTab(tabName) {
+        activeTab = tabName;
+
+        // 更新 ARIA 属性
+        [chatTabBtn, rulesTabBtn, settingsTabBtn].forEach(function(btn) {
+          btn.setAttribute('aria-selected', 'false');
+        });
+
         // 先移除所有标签和内容的 active
         chatTab.classList.remove('active');
         rulesTab.classList.remove('active');
@@ -422,14 +499,19 @@ export function getSidebarScript(sendDelayMs: number): string {
         if (tabName === 'chat') {
           chatTab.classList.add('active');
           chatTabBtn.classList.add('active');
+          chatTabBtn.setAttribute('aria-selected', 'true');
+          // C5: 切换到对话标签时清除未读标记
+          chatTabBtn.classList.remove('has-unread');
         } else if (tabName === 'rules') {
           rulesTab.classList.add('active');
           rulesTabBtn.classList.add('active');
+          rulesTabBtn.setAttribute('aria-selected', 'true');
           // 请求同步规则
           vscode.postMessage({ type: 'requestRules' });
         } else if (tabName === 'settings') {
           settingsTab.classList.add('active');
           settingsTabBtn.classList.add('active');
+          settingsTabBtn.setAttribute('aria-selected', 'true');
           // 请求同步设置
           vscode.postMessage({ type: 'requestSettings' });
         }
@@ -442,6 +524,7 @@ export function getSidebarScript(sendDelayMs: number): string {
       // 保存规则
       saveRulesBtn.addEventListener('click', () => {
         const workspaceRules = workspaceRulesInput.value;
+        setSaveBtnLoading(saveRulesBtn);
         vscode.postMessage({
           type: 'saveRules',
           workspaceRules: workspaceRules,
@@ -450,6 +533,7 @@ export function getSidebarScript(sendDelayMs: number): string {
 
       // 保存设置
       saveSettingsBtn.addEventListener('click', () => {
+        setSaveBtnLoading(saveSettingsBtn);
         vscode.postMessage({
           type: 'saveSettings',
           notifyOnToolCall: settingNotifyOnToolCall.checked,
@@ -457,6 +541,22 @@ export function getSidebarScript(sendDelayMs: number): string {
           showPluginNotifications: settingShowPluginNotifications.checked,
         });
       });
+
+      /** C6: 保存按钮加载态 — 点击后禁用并显示加载，完成后短暂显示成功 */
+      function setSaveBtnLoading(btn) {
+        btn.classList.add('loading');
+        btn.disabled = true;
+      }
+
+      /** C6: 保存按钮成功态 */      
+      function setSaveBtnSuccess(btn) {
+        btn.classList.remove('loading');
+        btn.classList.add('success');
+        setTimeout(function() {
+          btn.classList.remove('success');
+          btn.disabled = false;
+        }, 1500);
+      }
 
       // 显示状态消息（支持不同目标元素）
       function showStatusMessage(message, targetEl) {
@@ -564,6 +664,36 @@ export function getSidebarScript(sendDelayMs: number): string {
         contextMenu.classList.remove('show');
       });
 
+      // A6: 键盘导航右键菜单 — 支持上下箭头、Escape、Enter
+      document.addEventListener('keydown', function(e) {
+        if (!contextMenu.classList.contains('show')) return;
+
+        const items = contextMenu.querySelectorAll('[role="menuitem"]');
+        const currentIndex = Array.from(items).indexOf(document.activeElement);
+
+        switch (e.key) {
+          case 'ArrowDown':
+            e.preventDefault();
+            items[currentIndex < items.length - 1 ? currentIndex + 1 : 0].focus();
+            break;
+          case 'ArrowUp':
+            e.preventDefault();
+            items[currentIndex > 0 ? currentIndex - 1 : items.length - 1].focus();
+            break;
+          case 'Enter':
+          case ' ':
+            e.preventDefault();
+            if (document.activeElement && document.activeElement.click) {
+              document.activeElement.click();
+            }
+            break;
+          case 'Escape':
+            e.preventDefault();
+            contextMenu.classList.remove('show');
+            break;
+        }
+      });
+
       /** 复制功能 - 使用菜单打开时保存的文本，通过扩展API写入剪贴板 */
       ctxCopy.addEventListener('click', function() {
         if (savedSelectedText) {
@@ -602,7 +732,21 @@ export function getSidebarScript(sendDelayMs: number): string {
       inputField.addEventListener('input', () => {
         adjustHeight();
         updateButtonState();
+        // C3: 字符计数
+        updateCharCount();
       });
+
+      /** C3: 更新字符计数显示 */
+      function updateCharCount() {
+        const len = inputField.value.length;
+        if (len > 0) {
+          charCount.textContent = len + '/' + MAX_INPUT_LENGTH;
+          charCount.classList.toggle('warning', len > MAX_INPUT_LENGTH * 0.9);
+        } else {
+          charCount.textContent = '';
+          charCount.classList.remove('warning');
+        }
+      }
 
       // ====== 工具函数 ======
       function escapeHtml(text) {
@@ -617,43 +761,26 @@ export function getSidebarScript(sendDelayMs: number): string {
         if (!text) return '';
 
         // 超长文本保护：跳过 Markdown 渲染，仅做 HTML 转义和换行处理
-        const MAX_RENDER_LENGTH = 50000;
-        if (text.length > MAX_RENDER_LENGTH) {
-          return escapeHtml(text).replace(/\\r\\n|\\r|\\n/g, '<br>');
+        if (text.length > MD_MAX_RENDER_LENGTH) {
+          return escapeHtml(text).replace(RE_NEWLINE, '<br>');
         }
         
-        // 第一步：处理各种编码和转义序列
-        // 统一处理 \\uXXXX, \\xXX, \\n, \\r, \\t, \\\\ 等转义
-        function decodeEscape(match, seq) {
-          if (seq === 'n') return String.fromCharCode(10);
-          if (seq === 'r') return String.fromCharCode(13);
-          if (seq === 't') return String.fromCharCode(9);
-          if (seq.charAt(0) === 'u') {
-            try { return String.fromCharCode(parseInt(seq.substring(1), 16)); }
-            catch(e) { return match; }
-          }
-          if (seq.charAt(0) === 'x') {
-            try { return String.fromCharCode(parseInt(seq.substring(1), 16)); }
-            catch(e) { return match; }
-          }
-          return String.fromCharCode(92);
-        }
-        // 两次处理：先解码双重转义，再解码单重转义
-        text = text.replace(/\\\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|n|r|t|\\\\)/g, decodeEscape);
-        text = text.replace(/\\\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|n|r|t|\\\\)/g, decodeEscape);
+        // 第一步：处理各种编码和转义序列（使用预编译正则）
+        text = text.replace(RE_ESCAPE, decodeEscape);
+        text = text.replace(RE_ESCAPE, decodeEscape);
         
         // 处理 URL 编码的连续字节 (%XX%XX... → 实际字符)
-        text = text.replace(/(?:%[0-9a-fA-F]{2}){2,}/g, function(match) {
+        text = text.replace(RE_URL_ENCODE, function(match) {
           try { return decodeURIComponent(match); }
           catch(e) { return match; }
         });
         
         // 处理 HTML 数字实体 (&#xXXXX; 或 &#NNNN;)
-        text = text.replace(/&#x([0-9a-fA-F]+);/g, function(match, code) {
+        text = text.replace(RE_HTML_HEX_ENTITY, function(match, code) {
           try { return String.fromCodePoint(parseInt(code, 16)); }
           catch(e) { return match; }
         });
-        text = text.replace(/&#(\\d+);/g, function(match, code) {
+        text = text.replace(RE_HTML_DEC_ENTITY, function(match, code) {
           try { return String.fromCodePoint(parseInt(code, 10)); }
           catch(e) { return match; }
         });
@@ -661,17 +788,11 @@ export function getSidebarScript(sendDelayMs: number): string {
         // 第二步：对 HTML 转义（防止 XSS）
         let html = escapeHtml(text);
         
-        // 第三步：处理 Markdown 语法
-        // 代码块 - 支持可选的语言标识符
-        const backtick = String.fromCharCode(96);
-        const tripleBacktick = backtick + backtick + backtick;
-        const codeBlockRegex = new RegExp(tripleBacktick + '([\\\\s\\\\S]*?)' + tripleBacktick, 'g');
-        html = html.replace(codeBlockRegex, 
+        // 第三步：处理 Markdown 语法（使用预编译正则）
+        html = html.replace(RE_CODE_BLOCK, 
           '<pre style="background:var(--vscode-textCodeBlock-background);padding:8px;border-radius:4px;overflow-x:auto;margin:4px 0;"><code>$1</code></pre>');
         
-        // 行内代码
-        const inlineCodeRegex = new RegExp(backtick + '([^' + backtick + ']+)' + backtick, 'g');
-        html = html.replace(inlineCodeRegex,
+        html = html.replace(RE_INLINE_CODE,
           '<code style="background:var(--vscode-textCodeBlock-background);padding:1px 4px;border-radius:3px;">$1</code>');
         
         // 加粗 (**, __)
@@ -700,7 +821,7 @@ export function getSidebarScript(sendDelayMs: number): string {
         html = html.replace(/^[\\s]*(---|___|\\*\\*\\*)\\s*$/gm, '<hr style="border:none;border-top:1px solid var(--vscode-panel-border);margin:8px 0;">');
         
         // 第四步：处理换行符
-        html = html.replace(/\\r\\n|\\r|\\n/g, '<br>');
+        html = html.replace(RE_NEWLINE, '<br>');
         
         return html;
       }
@@ -926,13 +1047,41 @@ export function getSidebarScript(sendDelayMs: number): string {
           templateContentInput.value = '';
         }
         templateDialogOverlay.classList.add('show');
-        templateNameInput.focus();
+        // A5: 打开弹窗时聚焦第一个输入框
+        setTimeout(function() { templateNameInput.focus(); }, 50);
       }
 
       function closeTemplateDialog() {
         templateDialogOverlay.classList.remove('show');
         editingTemplateId = null;
+        // A5: 关闭弹窗后将焦点返回触发元素
+        addTemplateBtn.focus();
       }
+
+      // A5: 对话框焦点陷阱 — Tab 键在弹窗内循环
+      templateDialogOverlay.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          closeTemplateDialog();
+          return;
+        }
+        if (e.key !== 'Tab') return;
+
+        const focusable = templateDialogOverlay.querySelectorAll('input, textarea, button');
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        if (e.shiftKey) {
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      });
 
       addTemplateBtn.addEventListener('click', function() {
         openTemplateDialog(null);
