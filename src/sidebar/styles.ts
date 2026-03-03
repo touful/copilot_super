@@ -575,12 +575,11 @@ export function getSidebarStyles(): string {
       border-radius: var(--radius);
       background: var(--vscode-testing-iconPassed);
       color: var(--vscode-sideBar-background);
-      opacity: 0;
-      transition: opacity 0.3s ease;
+      display: none;
     }
 
     .status-message.show {
-      opacity: 1;
+      display: block;
     }
 
     /* ====== 规则库 ====== */
