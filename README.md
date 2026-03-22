@@ -2,7 +2,7 @@
 
 > 通过 MCP 协议扩展 GitHub Copilot 的对话能力，在单次计费周期内完成复杂多轮任务。
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/touful/copilot_super)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/touful/copilot_super)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.99.0-007ACC.svg)](https://code.visualstudio.com/)
 
@@ -126,6 +126,12 @@ A: 打开 VS Code 输出面板（Output），选择 `Copilot Super` 频道
 ---
 
 ## 📝 更新日志
+
+### v1.4.0
+- 优化 `prompts/prefix.txt` 与 `prompts/copilot-template.md` 的提示词结构
+- 工作流默认示例改为从 `prompts/workflow-templates.json` 读取
+- 规则默认模板改为从 `prompts/rule-templates.json` 读取
+- 新增工作流预览后确认执行的交互流程
 
 ### v1.3.0
 - 优化前端面板信息层级与可读性（消息区、输入区、状态展示）

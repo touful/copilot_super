@@ -5,93 +5,69 @@
 
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
-import { ToolCallParams } from './mcpServer';
+import * as fs from 'fs';
+import * as path from 'path';
+import type { ToolCallParams } from './mcpTypes';
+import {
+  appendHistoryEntry,
+  clearHistoryEntries,
+  persistHistory,
+} from './sidebar/historyStore';
+import { buildFullPrefix } from './sidebar/prefixBuilder';
+import {
+  clearQueuedResponses,
+  shiftQueuedResponse,
+  type QueuedResponse,
+} from './sidebar/queueManager';
+import { buildQueueSyncPayload, recallQueuedResponseView } from './sidebar/queueSync';
+import { syncSidebarReadyState } from './sidebar/readySync';
+import { getDefaultTemplates, mergeTemplatesFromPrompt, persistTemplates, saveTemplate } from './sidebar/templateStore';
+import { deleteTemplate, persistWorkspaceTemplateIds } from './sidebar/templateWorkspaceStore';
+import { deleteWorkflow, getDefaultWorkflows, mergeWorkflowsFromPrompt, persistWorkflows, saveWorkflow } from './sidebar/workflowStore';
+import {
+  type ExtToWebviewMessage,
+  type PendingRequest,
+  type RuleTemplate,
+  type SidebarHistoryEntry,
+  type WebviewToExtMessage,
+  type Workflow,
+  normalizeToolCallParams,
+} from './sidebar/types';
+import {
+  appendUserHistory,
+  buildResolvedUserResponse,
+  enqueueUserResponse,
+  removeQueuedUserHistory,
+} from './sidebar/messageFlow';
+import { createSidebarMessageHandler } from './sidebar/messageHandler';
 import { getSidebarStyles } from './sidebar/styles';
-import { getSidebarScript } from './sidebar/script';
-
-interface PendingRequest {
-  resolve: (value: string) => void;
-  timeout?: ReturnType<typeof setTimeout>;
-}
-
-interface RuleTemplate {
-  id: string;
-  name: string;
-  content: string;
-  enabled: boolean;
-}
-
-// ============ Webview 消息协议类型 ============
-
-/** Webview → Extension 的消息类型 */
-type WebviewToExtMessage =
-  | { type: 'userResponse'; text: string }
-  | { type: 'choiceSelected'; choice: string }
-  | { type: 'clearHistory' }
-  | { type: 'copyPrompt' }
-  | { type: 'copyText'; text: string }
-  | { type: 'saveRules'; workspaceRules: string }
-  | { type: 'requestRules' }
-  | { type: 'saveTemplate'; template: RuleTemplate }
-  | { type: 'deleteTemplate'; id: string }
-  | { type: 'requestTemplates' }
-  | { type: 'saveWorkspaceTemplate'; templateIds: string[] }
-  | { type: 'requestWorkspaceTemplate' }
-  | { type: 'saveSettings'; notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean }
-  | { type: 'requestSettings' }
-  | { type: 'requestQueueInfo' }
-  | { type: 'recallLastQueued' }
-  | { type: 'ready' };
-
-/** Extension → Webview 的消息类型 */
-type ExtToWebviewMessage =
-  | { type: 'showPrompt'; title: string; summary: string; choices: string[]; defaultFeedback: string; timestamp: number; autoResponded: boolean }
-  | { type: 'responseAccepted' }
-  | { type: 'requestCancelled' }
-  | { type: 'historyCleared' }
-  | { type: 'syncHistory'; history: Array<{ role: string; title?: string; content: string; timestamp: number }> }
-  | { type: 'syncRules'; workspaceRules: string }
-  | { type: 'rulesSaved' }
-  | { type: 'syncTemplates'; templates: RuleTemplate[] }
-  | { type: 'syncWorkspaceTemplate'; templateIds: string[] }
-  | { type: 'syncSettings'; notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean }
-  | { type: 'settingsSaved' }
-  | { type: 'playSound' }
-  | { type: 'syncQueue'; count: number; items: string[] }
-  | { type: 'queueRecalled'; text: string | null; count: number };
+import { buildShowPromptMessage, focusSidebarPanel, notifyToolCall } from './sidebar/toolCallView';
 
 // ============ 常量定义 ============
 
-/** 消息历史最大保存条数 */
-const MAX_HISTORY_ENTRIES = 200;
-/** 消息队列最大容量 */
-const MAX_QUEUE_SIZE = 50;
 /** 发送延迟时间（毫秒） */
 const SEND_DELAY_MS = 5000;
 /** CSP nonce 字符长度 */
 const NONCE_LENGTH = 32;
+const WEBVIEW_SCRIPT_RELATIVE_PATH = path.join('webview', 'sidebarWebviewApp.js');
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'copilot-super.panel';
 
   private webviewView?: vscode.WebviewView;
   private pendingRequest: PendingRequest | null = null;
-  private responseQueue: Array<{original: string; full: string}> = []; // 存储用户预先发送的消息（含原始文本和完整文本）
+  private responseQueue: QueuedResponse[] = []; // 存储用户预先发送的消息（含原始文本和完整文本）
   public onGetPrefix?: () => string; // 获取前置提示词的回调
   public onGetToolName?: () => string; // 获取工具名的回调
 
-  private messageHistory: Array<{
-    role: 'copilot' | 'user'; 
-    title?: string;
-    content: string;
-    timestamp: number;
-  }> = [];
+  private messageHistory: SidebarHistoryEntry[] = [];
 
   // 规则存储 (功能3)
-  private workspaceRules: string = '';
+  private globalRules: string = '';
   private ruleTemplates: RuleTemplate[] = [];
   // 工作区级别的规则模版：有序的规则ID数组，每个工作区独立缓存
   private workspaceRuleTemplate: string[] = [];
+  private workflows: Workflow[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -99,16 +75,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   ) {
     // 从持久化存储加载对话历史
     this.messageHistory = context.workspaceState.get('copilot-super.history', []);
-    // 从持久化存储加载规则（仅保留工作区规则）
-    this.workspaceRules = context.workspaceState.get<string>('copilot-super.workspaceRules', '');
+    // 从持久化存储加载规则（全局共享）
+    this.globalRules = vscode.workspace.getConfiguration('copilot-super').get<string>('globalRules', '')
+      || context.globalState.get<string>('copilot-super.globalRules', '');
     // 加载规则库（全局共享）
     this.ruleTemplates = context.globalState.get<RuleTemplate[]>('copilot-super.ruleTemplates', []);
     // 加载工作区级别的规则模版（有序ID列表）
     this.workspaceRuleTemplate = context.workspaceState.get<string[]>('copilot-super.workspaceRuleTemplate', []);
-    if (this.ruleTemplates.length === 0) {
-      this.ruleTemplates = this.getDefaultTemplates();
-      context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
-    }
+    this.workflows = context.globalState.get<Workflow[]>('copilot-super.workflows', []);
+    const promptTemplates = getDefaultTemplates(this.context.extensionPath);
+    this.ruleTemplates = mergeTemplatesFromPrompt(this.ruleTemplates, promptTemplates);
+    context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
+
+    const promptWorkflows = getDefaultWorkflows(this.context.extensionPath);
+    this.workflows = mergeWorkflowsFromPrompt(this.workflows, promptWorkflows);
+    context.globalState.update('copilot-super.workflows', this.workflows);
   }
 
   resolveWebviewView(
@@ -125,100 +106,67 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtmlContent();
 
+    const handleMessage = createSidebarMessageHandler({
+      resolveUserResponse: (text) => this.resolveUserResponse(text),
+      clearHistory: () => this.clearHistory(),
+      saveRules: async (globalRules) => {
+        this.globalRules = globalRules;
+        await vscode.workspace.getConfiguration('copilot-super').update('globalRules', this.globalRules, vscode.ConfigurationTarget.Global);
+        await this.context.globalState.update('copilot-super.globalRules', this.globalRules);
+        await vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
+        this.postMessage({ type: 'rulesSaved' });
+      },
+      requestRules: () => {
+        this.postMessage({ type: 'syncRules', globalRules: this.globalRules });
+      },
+      saveTemplate: (template) => this.handleSaveTemplate(template),
+      deleteTemplate: (id) => this.handleDeleteTemplate(id),
+      requestTemplates: () => {
+        this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
+      },
+      saveWorkflow: async (workflow) => this.handleSaveWorkflow(workflow),
+      deleteWorkflow: async (id) => this.handleDeleteWorkflow(id),
+      requestWorkflows: () => {
+        this.postMessage({ type: 'syncWorkflows', workflows: this.workflows });
+      },
+      runWorkflow: async (id) => this.handlePreviewWorkflow(id),
+      confirmRunWorkflow: async (id) => this.handleRunWorkflow(id),
+      requestQueueInfo: () => this.syncQueueInfo(),
+      recallLastQueued: () => this.handleRecallLastQueued(),
+      saveWorkspaceTemplate: async (templateIds) => {
+        this.workspaceRuleTemplate = templateIds;
+        await this.context.workspaceState.update('copilot-super.workspaceRuleTemplate', this.workspaceRuleTemplate);
+        await vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
+      },
+      requestWorkspaceTemplate: () => {
+        this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
+      },
+      ready: () => {
+        syncSidebarReadyState({
+          syncHistory: () => this.syncHistory(),
+          syncRules: () => this.postMessage({ type: 'syncRules', globalRules: this.globalRules }),
+          syncTemplates: () => this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates }),
+          syncWorkspaceTemplate: () => this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate }),
+          syncWorkflows: () => this.postMessage({ type: 'syncWorkflows', workflows: this.workflows }),
+          syncQueueInfo: () => this.syncQueueInfo(),
+        });
+      },
+    });
+
     // 监听来自 Webview 的消息（使用类型化消息协议）
     webviewView.webview.onDidReceiveMessage((msg: WebviewToExtMessage) => {
-      switch (msg.type) {
-        case 'userResponse':
-          this.resolveUserResponse(msg.text);
-          break;
-        case 'choiceSelected':
-          this.resolveUserResponse(msg.choice);
-          break;
-        case 'clearHistory':
-          this.messageHistory = [];
-          this.postMessage({ type: 'historyCleared' });
-          break;
-        case 'copyPrompt':
-          vscode.commands.executeCommand('copilot-super.copyPrompt');
-          break;
-        case 'copyText':
-          // 通过扩展API写入剪贴板（webview中navigator.clipboard可能不可用）
-          if (msg.text) {
-            vscode.env.clipboard.writeText(msg.text);
-          }
-          break;
-        case 'saveRules':
-          // 保存工作区规则
-          this.workspaceRules = msg.workspaceRules || '';
-          this.context.workspaceState.update('copilot-super.workspaceRules', this.workspaceRules);
-          this.postMessage({ type: 'rulesSaved' });
-          break;
-        case 'requestRules':
-          // 返回当前工作区规则
-          this.postMessage({
-            type: 'syncRules',
-            workspaceRules: this.workspaceRules,
-          });
-          break;
-        case 'saveTemplate':
-          this.handleSaveTemplate(msg.template as RuleTemplate);
-          break;
-        case 'deleteTemplate':
-          this.handleDeleteTemplate(msg.id as string);
-          break;
-        case 'requestTemplates':
-          this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
-          break;
-        case 'saveSettings':
-          // 保存设置项到 VS Code 配置
-          this.handleSaveSettings(msg as { notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean });
-          break;
-        case 'requestSettings':
-          // 返回当前设置项
-          this.syncSettings();
-          break;
-        case 'requestQueueInfo':
-          // 返回队列状态
-          this.syncQueueInfo();
-          break;
-        case 'recallLastQueued':
-          // 撤回队列中最后一条消息
-          this.handleRecallLastQueued();
-          break;
-        case 'saveWorkspaceTemplate':
-          // 保存工作区规则模版（有序ID列表）
-          this.workspaceRuleTemplate = msg.templateIds || [];
-          this.context.workspaceState.update('copilot-super.workspaceRuleTemplate', this.workspaceRuleTemplate);
-          break;
-        case 'requestWorkspaceTemplate':
-          // 返回当前工作区规则模版
-          this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
-          break;
-        case 'ready':
-          // Webview 就绪，同步历史记录、规则、模板、设置和队列
-          this.syncHistory();
-          this.postMessage({
-            type: 'syncRules',
-            workspaceRules: this.workspaceRules,
-          });
-          this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
-          this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
-          this.syncSettings();
-          this.syncQueueInfo();
-          break;
-      }
+      handleMessage(msg).catch((error: unknown) => {
+        console.error('[SidebarProvider] Failed to handle webview message:', msg.type, error);
+      });
     });
   }
 
   /** 处理工具调用 - 展示信息并等待用户输入 */
   async handleToolCall(params: ToolCallParams): Promise<string> {
-    const title = params.title || '来自 Copilot';
-    const summary = params.summary || '';
-    const choices = params.choices || [];
-    const defaultFeedback = params.default_feedback || '';
+    const { title, summary, choices, defaultFeedback } = normalizeToolCallParams(params);
 
     // 记录 Copilot 消息 (无论是否立即返回，都记录)
-    this.messageHistory.push({
+    this.messageHistory = appendHistoryEntry(this.messageHistory, {
       role: 'copilot',
       title,
       content: summary,
@@ -227,28 +175,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.saveHistory();
 
     // 确保侧边栏可见
-    if (this.webviewView) {
-      this.webviewView.show(true);
-    } else {
-      await vscode.commands.executeCommand('copilot-super.panel.focus');
-    }
+    await focusSidebarPanel(this.webviewView);
 
     // 1. 如果有预先排队的用户消息，立即使用并返回，不进入等待状态
     if (this.responseQueue.length > 0) {
-      const queued = this.responseQueue.shift()!;
+      const queuedResult = shiftQueuedResponse(this.responseQueue);
+      this.responseQueue = queuedResult.queue;
+      const queued = queuedResult.item!;
       const response = queued.full;
       
       // 更新 Webview 显示 (让用户看到 Copilot 刚才发了什么，虽然已经自动回复了)
-      this.postMessage({
-        type: 'showPrompt',
-        title,
-        summary,
-        choices,       // 选项可能不重要了，因为已经自动选择了
-        defaultFeedback,
-        timestamp: Date.now(),
-        // 标记为已快速响应，Webview 可以选择不进入 Input 锁定状态
-        autoResponded: true 
-      });
+      this.postMessage(buildShowPromptMessage({ title, summary, choices, defaultFeedback }, true));
 
       // 队列被消费，同步队列状态到 Webview
       this.syncQueueInfo();
@@ -259,15 +196,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     // 2. 正常流程：通知用户并等待输入
     const config = vscode.workspace.getConfiguration('copilot-super');
     if (config.get<boolean>('notifyOnToolCall', true)) {
-      vscode.window.showInformationMessage(
-        `🤖 ${title}`,
-        { modal: false },
-        '查看'
-      ).then((action) => {
-        if (action === '查看') {
-          vscode.commands.executeCommand('copilot-super.panel.focus');
-        }
-      });
+      notifyToolCall(title);
     }
 
     // 播放提示音（通过 Webview AudioContext）
@@ -276,21 +205,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     // 发送到 Webview
-    this.postMessage({
-      type: 'showPrompt',
-      title,
-      summary,
-      choices,
-      defaultFeedback,
-      timestamp: Date.now(),
-      autoResponded: false
-    });
+    this.postMessage(buildShowPromptMessage({ title, summary, choices, defaultFeedback }, false));
 
     // 等待用户响应
     return new Promise<string>((resolve) => {
       // 清除之前的等待
       if (this.pendingRequest?.timeout) {
-        clearTimeout(this.pendingRequest.timeout);
+        clearTimeout(this.pendingRequest.timeout as NodeJS.Timeout);
       }
       this.pendingRequest = { resolve };
     });
@@ -315,8 +236,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   /** 清空对话历史 */
   clearHistory(): void {
-    this.messageHistory = [];
-    this.responseQueue = []; // 清空队列
+    this.messageHistory = clearHistoryEntries();
+    this.responseQueue = clearQueuedResponses();
     this.saveHistory();
     this.postMessage({ type: 'historyCleared' });
   }
@@ -328,25 +249,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    // 记录用户消息
-    this.messageHistory.push({
-      role: 'user',
-      content: text,
-      timestamp: Date.now(),
-    });
+    this.messageHistory = appendUserHistory(this.messageHistory, text);
     this.saveHistory();
 
-    let responseText = text;
-    if (this.onGetPrefix) {
-      const fullPrefix = this.buildFullPrefix();
-      if (fullPrefix) {
-        // 添加后缀提醒
-        const toolName = this.onGetToolName?.();
-        const suffix = toolName ? `，每次任务完成之后请调用${toolName}进行汇报。` : '';
-        // 用[待办任务]引导真实任务，避免AI忽略真实任务
-        responseText = `${fullPrefix}\n\n[待办任务]\n${text}${suffix}`;
-      }
-    }
+    const responseText = buildResolvedUserResponse({
+      text,
+      prefix: this.onGetPrefix?.(),
+      toolName: this.onGetToolName?.(),
+      globalRules: this.globalRules,
+      workspaceRuleTemplate: this.workspaceRuleTemplate,
+      ruleTemplates: this.ruleTemplates,
+    });
 
     // 1. 如果有挂起的 Copilot 请求，立即解决
     if (this.pendingRequest) {
@@ -358,10 +271,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     // 2. 如果没有请求，存入队列，等待下次 Copilot 调用时使用
-    if (this.responseQueue.length >= MAX_QUEUE_SIZE) {
-      this.responseQueue.shift(); // 队列已满时移除最旧的消息
-    }
-    this.responseQueue.push({ original: text, full: responseText });
+    this.responseQueue = enqueueUserResponse(this.responseQueue, text, responseText);
     // 通知 Webview 更新队列状态
     this.syncQueueInfo();
   }
@@ -371,85 +281,133 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     return this.buildFullPrefix();
   }
 
+  getRulesText(): string {
+    const parts: string[] = [];
+
+    if (this.globalRules.trim()) {
+      parts.push('[全局规则]');
+      parts.push(this.globalRules.trim());
+    }
+
+    const orderedRules = this.workspaceRuleTemplate
+      .map((id) => this.ruleTemplates.find((template) => template.id === id))
+      .filter((template): template is RuleTemplate => !!template)
+      .map((template, index) => `${index + 1}. ${template.content}`);
+
+    if (orderedRules.length > 0) {
+      parts.push('[规则模板]');
+      parts.push(orderedRules.join('\n'));
+    }
+
+    return parts.join('\n');
+  }
+
+  refresh(): void {
+    if (this.webviewView) {
+      this.webviewView.webview.html = this.getHtmlContent();
+    }
+  }
+
   /** 构建完整的前缀提示词（prefix + 工作区规则 + 规则模版） */
   private buildFullPrefix(): string {
     if (!this.onGetPrefix) {
       return '';
     }
-    const prefix = this.onGetPrefix();
-    let result = prefix;
-    if (this.workspaceRules.trim()) {
-      result = `${result}\n\n[工作区规则]\n${this.workspaceRules}`;
-    }
-    // 拼接工作区规则模版中的规则（按拖拽顺序，自动加序号）
-    const orderedRules = this.workspaceRuleTemplate
-      .map(id => this.ruleTemplates.find(t => t.id === id))
-      .filter((t): t is RuleTemplate => !!t)
-      .map((t, i) => `${i + 1}. ${t.content}`);
-    if (orderedRules.length > 0) {
-      result = `${result}\n\n[规则模板]\n${orderedRules.join('\n')}`;
-    }
-    return result;
+
+    return buildFullPrefix({
+      prefix: this.onGetPrefix(),
+      globalRules: this.globalRules,
+      workspaceRuleTemplate: this.workspaceRuleTemplate,
+      ruleTemplates: this.ruleTemplates,
+    });
   }
 
   /** 持久化对话历史到 workspaceState */
   private saveHistory(): void {
-    if (this.messageHistory.length > MAX_HISTORY_ENTRIES) {
-      this.messageHistory = this.messageHistory.slice(-MAX_HISTORY_ENTRIES);
-    }
-    this.context.workspaceState.update('copilot-super.history', this.messageHistory);
-  }
-
-  /** 获取默认规则模板 */
-  private getDefaultTemplates(): RuleTemplate[] {
-    return [
-      { id: 'builtin-1', name: '中文回复', content: '请使用中文回复所有内容，包括代码注释。', enabled: false },
-      { id: 'builtin-2', name: '简洁模式', content: '请简洁回复，省略不必要的解释，直接给出结果。', enabled: false },
-      { id: 'builtin-3', name: '详细解释', content: '请详细解释每一步操作的原因和逻辑，确保用户理解。', enabled: false },
-      { id: 'builtin-4', name: '代码审查', content: '请仔细审查代码，关注可能的bug、安全问题、性能瓶颈和最佳实践。', enabled: false },
-    ];
+    persistHistory(this.context, this.messageHistory);
   }
 
   /** 保存(新增/编辑)规则模板 */
   private handleSaveTemplate(template: RuleTemplate): void {
-    const idx = this.ruleTemplates.findIndex(t => t.id === template.id);
-    if (idx >= 0) {
-      this.ruleTemplates[idx] = template;
-    } else {
-      this.ruleTemplates.push(template);
-    }
-    this.context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
+    this.ruleTemplates = saveTemplate(this.ruleTemplates, template);
+    persistTemplates(this.context, this.ruleTemplates);
+    void vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
     this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
   }
 
   /** 删除规则模板 */
   private handleDeleteTemplate(id: string): void {
-    this.ruleTemplates = this.ruleTemplates.filter(t => t.id !== id);
-    this.context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
-    // 同时从工作区规则模版中移除
-    this.workspaceRuleTemplate = this.workspaceRuleTemplate.filter(tid => tid !== id);
-    this.context.workspaceState.update('copilot-super.workspaceRuleTemplate', this.workspaceRuleTemplate);
+    const result = deleteTemplate(this.ruleTemplates, this.workspaceRuleTemplate, id);
+    this.ruleTemplates = result.templates;
+    this.workspaceRuleTemplate = result.workspaceTemplateIds;
+    persistTemplates(this.context, this.ruleTemplates);
+    persistWorkspaceTemplateIds(this.context, this.workspaceRuleTemplate);
+    void vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
     this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
     this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
   }
 
-  /** 保存设置项到 VS Code 配置 */
-  private async handleSaveSettings(settings: { notifyOnToolCall: boolean; soundOnToolCall: boolean; showPluginNotifications: boolean }): Promise<void> {
-    const config = vscode.workspace.getConfiguration('copilot-super');
-    await config.update('notifyOnToolCall', settings.notifyOnToolCall, vscode.ConfigurationTarget.Global);
-    await config.update('soundOnToolCall', settings.soundOnToolCall, vscode.ConfigurationTarget.Global);
-    await config.update('showPluginNotifications', settings.showPluginNotifications, vscode.ConfigurationTarget.Global);
-    this.postMessage({ type: 'settingsSaved' });
+  private async handleSaveWorkflow(workflow: Workflow): Promise<void> {
+    this.workflows = saveWorkflow(this.workflows, workflow);
+    await persistWorkflows(this.context, this.workflows);
+    this.postMessage({ type: 'syncWorkflows', workflows: this.workflows });
   }
 
-  /** 同步当前设置到 Webview */
-  private syncSettings(): void {
-    const config = vscode.workspace.getConfiguration('copilot-super');
+  private async handleDeleteWorkflow(id: string): Promise<void> {
+    this.workflows = deleteWorkflow(this.workflows, id);
+    await persistWorkflows(this.context, this.workflows);
+    this.postMessage({ type: 'syncWorkflows', workflows: this.workflows });
+  }
+
+  private async handleRunWorkflow(id: string): Promise<void> {
+    const workflow = this.workflows.find((item) => item.id === id);
+    if (!workflow || workflow.steps.length === 0) {
+      return;
+    }
+
+    for (const step of workflow.steps) {
+      const prompt = step.prompt.trim();
+      if (!prompt) {
+        continue;
+      }
+
+      this.messageHistory = appendUserHistory(this.messageHistory, prompt);
+      const responseText = buildResolvedUserResponse({
+        text: prompt,
+        prefix: this.onGetPrefix?.(),
+        toolName: this.onGetToolName?.(),
+        globalRules: this.globalRules,
+        workspaceRuleTemplate: this.workspaceRuleTemplate,
+        ruleTemplates: this.ruleTemplates,
+      });
+      this.responseQueue = enqueueUserResponse(this.responseQueue, prompt, responseText);
+    }
+
+    this.saveHistory();
+    this.syncHistory();
+    this.syncQueueInfo();
     this.postMessage({
-      type: 'syncSettings',
-      notifyOnToolCall: config.get<boolean>('notifyOnToolCall', true),
-      soundOnToolCall: config.get<boolean>('soundOnToolCall', false),
-      showPluginNotifications: config.get<boolean>('showPluginNotifications', true),
+      type: 'workflowRunQueued',
+      workflowName: workflow.name,
+      stepCount: workflow.steps.filter((item) => item.prompt.trim()).length,
+    });
+  }
+
+  private async handlePreviewWorkflow(id: string): Promise<void> {
+    const workflow = this.workflows.find((item) => item.id === id);
+    if (!workflow) {
+      return;
+    }
+
+    const stepCount = workflow.steps.filter((item) => item.prompt.trim()).length;
+    if (stepCount === 0) {
+      return;
+    }
+
+    this.postMessage({
+      type: 'previewWorkflow',
+      workflow,
+      stepCount,
     });
   }
 
@@ -457,30 +415,26 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private syncQueueInfo(): void {
     this.postMessage({
       type: 'syncQueue',
-      count: this.responseQueue.length,
-      items: this.responseQueue.map(q => q.original),
+      ...buildQueueSyncPayload(this.responseQueue),
     });
   }
 
   /** 撤回队列中最后一条未发送的消息，返回原始文本给 Webview */
   private handleRecallLastQueued(): void {
-    if (this.responseQueue.length === 0) {
-      this.postMessage({ type: 'queueRecalled', text: null, count: 0 });
+    const recallResult = recallQueuedResponseView(this.responseQueue);
+    this.responseQueue = recallResult.queue;
+
+    if (!recallResult.payload.text) {
+      this.postMessage({ type: 'queueRecalled', ...recallResult.payload });
       return;
     }
-    const recalled = this.responseQueue.pop()!;
+
     // 同时从消息历史中移除最后一条用户消息（与队列对应）
-    for (let i = this.messageHistory.length - 1; i >= 0; i--) {
-      if (this.messageHistory[i].role === 'user') {
-        this.messageHistory.splice(i, 1);
-        break;
-      }
-    }
+    this.messageHistory = removeQueuedUserHistory(this.messageHistory);
     this.saveHistory();
     this.postMessage({
       type: 'queueRecalled',
-      text: recalled.original,
-      count: this.responseQueue.length,
+      ...recallResult.payload,
     });
   }
 
@@ -505,12 +459,18 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private getHtmlContent(): string {
     // 生成 CSP nonce 用于内联脚本安全
     const nonce = this.getNonce();
+    const webviewScript = this.readWebviewScript();
+    const webviewBootstrap = JSON.stringify({ sendDelayMs: SEND_DELAY_MS })
+      .replace(/&/g, '\\u0026')
+      .replace(/</g, '\\u003c')
+      .replace(/>/g, '\\u003e')
+      .replace(/"/g, '&quot;');
     return /*html*/ `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' ${this.webviewView?.webview.cspSource};">
   <style>${getSidebarStyles()}</style>
 </head>
 <body>
@@ -527,7 +487,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   <div class="tabs" role="tablist" aria-label="面板导航">
     <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="chatTab" data-tab="chat" id="chatTabBtn"><span role="img" aria-hidden="true">💬</span> 对话</button>
     <button class="tab-btn" role="tab" aria-selected="false" aria-controls="rulesTab" data-tab="rules" id="rulesTabBtn"><span role="img" aria-hidden="true">📏</span> 规则</button>
-    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="settingsTab" data-tab="settings" id="settingsTabBtn"><span role="img" aria-hidden="true">⚙️</span> 设置</button>
+    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="workflowTab" data-tab="workflow" id="workflowTabBtn"><span role="img" aria-hidden="true">🧭</span> 工作流</button>
   </div>
 
   <!-- 对话页面 -->
@@ -583,15 +543,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     <div class="settings-page">
       <div class="section-step">
         <span class="step-badge">步骤 1</span>
-        <span class="step-title">编辑工作区规则</span>
+        <span class="step-title">编辑全局规则</span>
       </div>
       <div class="setting-group">
-        <label>工作区规则</label>
-        <div class="hint">仅在当前工作区适用的规则文本，会添加到提示词前缀之后</div>
+        <label>全局规则</label>
+        <div class="hint">在此电脑上打开任意项目时都会生效，并会写入 \`.github/copilot.md\`</div>
         <textarea 
           class="rule-textarea" 
           id="workspaceRulesInput" 
-          placeholder="输入工作区规则，每条规则占一行或使用段落分隔..."
+          placeholder="输入全局规则，每条规则占一行或使用段落分隔..."
         ></textarea>
       </div>
 
@@ -623,55 +583,67 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <!-- 设置页面 -->
-  <div class="tab-content" id="settingsTab" role="tabpanel" aria-labelledby="settingsTabBtn">
+  <!-- 工作流页面 -->
+  <div class="tab-content" id="workflowTab" role="tabpanel" aria-labelledby="workflowTabBtn">
     <div class="settings-page">
-      <div class="setting-group">
-        <label>提示信息设置</label>
-        <div class="hint">控制插件的通知和提示行为</div>
+      <div class="section-step">
+        <span class="step-badge">步骤 1</span>
+        <span class="step-title">选择或新建工作流</span>
       </div>
 
-      <div class="setting-group">
-        <div class="setting-toggle">
-          <label class="toggle-switch" for="settingNotifyOnToolCall">
-            <input type="checkbox" id="settingNotifyOnToolCall" checked>
-            <span class="toggle-slider"></span>
-          </label>
-          <div class="setting-toggle-info">
-            <label for="settingNotifyOnToolCall">允许 MCP 调用时提示信息</label>
-            <div class="hint">当 Copilot 通过 MCP 工具调用时，在右下角显示通知</div>
-          </div>
+      <div class="workflow-panel">
+        <div class="setting-group">
+          <label>工作流</label>
+          <div class="hint">把固定流程拆成多条提示词，选中后会按顺序加入待发送队列</div>
+        </div>
+
+        <div class="setting-group">
+          <label for="workflowList">工作流列表</label>
+          <div class="hint">可直接选择“+ 新建工作流”，然后填写并保存</div>
+          <select class="rule-textarea" id="workflowList" size="6"></select>
         </div>
       </div>
 
-      <div class="setting-group">
-        <div class="setting-toggle">
-          <label class="toggle-switch" for="settingSoundOnToolCall">
-            <input type="checkbox" id="settingSoundOnToolCall">
-            <span class="toggle-slider"></span>
-          </label>
-          <div class="setting-toggle-info">
-            <label for="settingSoundOnToolCall">允许 MCP 调用时提示音</label>
-            <div class="hint">当 Copilot 通过 MCP 工具调用时，播放提示音效</div>
+      <div class="section-step">
+        <span class="step-badge">步骤 2</span>
+        <span class="step-title">编辑步骤并保存</span>
+      </div>
+
+      <div class="workflow-panel">
+        <div class="setting-group">
+          <label for="workflowNameInput">工作流名称</label>
+          <input class="rule-textarea" id="workflowNameInput" placeholder="例如：代码修复流程" />
+        </div>
+
+        <div class="setting-group">
+          <label>工作流步骤</label>
+          <div class="hint">点击“添加步骤”逐条添加提示词，支持拖拽排序</div>
+          <div class="workflow-steps-list" id="workflowStepsList">
+            <!-- 步骤将动态添加 -->
           </div>
+          <button class="add-step-btn" id="addStepBtn" type="button">+ 添加步骤</button>
+        </div>
+
+        <div class="dialog-actions workflow-actions">
+          <button class="dialog-cancel-btn" id="deleteWorkflowBtn">删除</button>
+          <button class="dialog-save-btn" id="runWorkflowBtn">发送工作流</button>
+          <button class="dialog-save-btn" id="saveWorkflowBtn">保存工作流</button>
         </div>
       </div>
 
-      <div class="setting-group">
-        <div class="setting-toggle">
-          <label class="toggle-switch" for="settingShowPluginNotifications">
-            <input type="checkbox" id="settingShowPluginNotifications" checked>
-            <span class="toggle-slider"></span>
-          </label>
-          <div class="setting-toggle-info">
-            <label for="settingShowPluginNotifications">允许插件发送 VS Code 提示</label>
-            <div class="hint">允许本插件在各种操作时发送 VS Code 通知消息</div>
-          </div>
-        </div>
-      </div>
+      <div class="status-message" id="workflowSavedMsg">工作流已更新！</div>
+    </div>
+  </div>
 
-      <button class="save-rules-btn" id="saveSettingsBtn">保存设置</button>
-      <div class="status-message" id="settingsSavedMsg">设置已保存！</div>
+  <div class="template-dialog-overlay" id="workflowPreviewOverlay" role="dialog" aria-modal="true" aria-labelledby="workflowPreviewTitle">
+    <div class="template-dialog">
+      <h3 id="workflowPreviewTitle">预览工作流</h3>
+      <div class="hint" id="workflowPreviewSummary"></div>
+      <div class="workflow-preview-list" id="workflowPreviewList"></div>
+      <div class="dialog-actions">
+        <button class="dialog-cancel-btn" id="workflowPreviewCancelBtn">取消</button>
+        <button class="dialog-save-btn" id="workflowPreviewConfirmBtn">确认发送</button>
+      </div>
     </div>
   </div>
 
@@ -701,8 +673,33 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     </div>
   </div>
 
-  <script nonce="${nonce}">${getSidebarScript(SEND_DELAY_MS)}</script>
+  <script nonce="${nonce}" id="sidebar-webview-bootstrap" data-init="${webviewBootstrap}"></script>
+  <script nonce="${nonce}">${webviewScript}</script>
 </body>
 </html>`;
+  }
+
+  private readWebviewScript(): string {
+    const candidates = this.getWebviewScriptCandidates();
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return fs.readFileSync(candidate, 'utf8');
+      }
+    }
+
+    throw new Error(`Webview script not found. Checked: ${candidates.join(', ')}`);
+  }
+
+  private getWebviewScriptCandidates(): string[] {
+    const extensionRoot = this.context.extensionPath;
+    const distRoot = path.dirname(__filename);
+
+    return [
+      path.join(distRoot, WEBVIEW_SCRIPT_RELATIVE_PATH),
+      path.join(extensionRoot, 'dist', WEBVIEW_SCRIPT_RELATIVE_PATH),
+      path.join(extensionRoot, 'out', WEBVIEW_SCRIPT_RELATIVE_PATH),
+      path.join(extensionRoot, 'src', WEBVIEW_SCRIPT_RELATIVE_PATH),
+    ];
   }
 }

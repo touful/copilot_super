@@ -2,7 +2,7 @@
   "name": "copilot-super",
   "displayName": "Copilot Super - 无限对话模式",
   "description": "通过 MCP 服务实现与 GitHub Copilot 的多轮交互，在单次计费周期内完成复杂任务",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "touful",
   "repository": {
     "type": "git",
@@ -90,11 +90,13 @@
         {
           "command": "copilot-super.restartServer",
           "when": "view == copilot-super.panel",
-          "group": "navigation"        },
+          "group": "navigation"
+        },
         {
           "command": "copilot-super.copyPrompt",
           "when": "view == copilot-super.panel",
-          "group": "navigation"        }
+          "group": "navigation"
+        }
       ]
     },
     "configuration": {
@@ -124,6 +126,11 @@
           "type": "boolean",
           "default": true,
           "description": "允许本插件发送 VS Code 通知消息"
+        },
+        "copilot-super.globalRules": {
+          "type": "string",
+          "default": "",
+          "description": "全局规则，适用于本机所有项目，并同步写入 .github/copilot.md"
         }
       }
     }
@@ -141,5 +148,8 @@
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.24.2",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "marked": "^17.0.5"
   }
 }

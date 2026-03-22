@@ -6,104 +6,43 @@
 
 import * as http from 'http';
 import * as crypto from 'crypto';
-
-// ============ 类型定义 ============
-
-interface JsonRpcRequest {
-  jsonrpc: '2.0';
-  id?: number | string;
-  method: string;
-  params?: Record<string, unknown>;
-}
-
-interface JsonRpcResponse {
-  jsonrpc: '2.0';
-  id: number | string;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
-
-export interface ToolCallParams {
-  title?: string;
-  summary?: string;
-  choices?: string[];
-  default_feedback?: string;
-}
-
-export type ToolCallHandler = (params: ToolCallParams) => Promise<string>;
-
-// ============ MCP 实例编号 ============
-
-const BASE_PORT = 55432;
-
-/** 根据端口计算实例编号。55433→1, 55434→2, ..., 55442→10 */
-export function getMcpInstanceIndex(port: number): number {
-  const index = port - BASE_PORT;
-  if (index >= 1 && index <= 10) {
-    return index;
-  }
-  return port; // OS 随机端口时，退回使用端口号本身
-}
-
-/** 获取 MCP 工具名 (snake_case)：copilot_super_1 ~ copilot_super_10 */
-export function getMcpToolName(port: number): string {
-  return `copilot_super_${getMcpInstanceIndex(port)}`;
-}
-
-/** 获取 MCP 服务器注册名 (kebab-case)：copilot-super-1 ~ copilot-super-10 */
-export function getMcpServerKey(port: number): string {
-  return `copilot-super-${getMcpInstanceIndex(port)}`;
-}
-
-/** 根据工具名和 inputSchema 构建 MCP 工具定义 */
-function buildToolDefinition(toolName: string) {
-  return {
-    name: toolName,
-    description: [
-      '用户通过远程监控的方式和你对话，此 mcp 用于节点通信（电话，唯一方式），用户能够正常看到你在进行的 task 以及 response（chat面板是监控）.',
-      '',
-      '<PREREQUISITE>',
-      '✓ Executed IDE actions (禁止用终端指令写代码)',
-      '✓ Shown output to user in response，在copilot聊天窗口，输出主任务',
-      '</PREREQUISITE>',
-      '不管你是什么模型，都必须在遵守 .github/copilot.md 的前提下工作.',
-    ].join('\n'),
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        title: {
-          type: 'string',
-          description: '任务标题',
-        },
-        summary: {
-          type: 'string',
-          description: '向用户展示的对话摘要信息，主要输出在chatcopilot面板',
-        },
-        choices: {
-          type: 'array',
-          items: { type: 'string' },
-          description: '供用户选择的选项列表',
-        },
-        default_feedback: {
-          type: 'string',
-          description: '优化下一步的提示词',
-        },
-      },
-      required: ['title'],
-    },
-  };
-}
+import { getMcpToolName } from './mcpProtocol';
+import {
+  parseJsonRpcMessage,
+  processBatchMessages,
+  processStandardMessage,
+  validateSessionId,
+} from './mcpProtocolHelpers';
+import {
+  buildInitializeResponse,
+  buildMissingHandlerResponse,
+  buildToolCallResult,
+  buildToolsListResponse,
+  buildUnknownToolResponse,
+} from './mcpResponses';
+import { handleToolCallStream } from './mcpToolCallStream';
+import type { JsonRpcRequest, JsonRpcResponse, ToolCallHandler, ToolCallParams } from './mcpTypes';
 
 // ============ 常量定义 ============
 
 /** SSE 心跳间隔（毫秒） */
 const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
-/** POST 长轮询保活间隔（毫秒），防止 undici 超时 */
-const POST_KEEPALIVE_INTERVAL_MS = 120_000;
 /** 端口重试最大次数 */
 const MAX_PORT_ATTEMPTS = 10;
 /** 请求体最大大小（字节），防止内存耗尽攻击 */
 const MAX_REQUEST_BODY_SIZE = 1024 * 1024; // 1MB
+
+// ============ 类型守卫 ============
+
+/** 检查是否为端口占用错误 */
+function isAddressInUseError(err: unknown): err is NodeJS.ErrnoException {
+  return (
+    err !== null &&
+    typeof err === 'object' &&
+    'code' in err &&
+    (err as NodeJS.ErrnoException).code === 'EADDRINUSE'
+  );
+}
 
 // ============ MCP HTTP Server ============
 
@@ -160,10 +99,9 @@ export class McpHttpServer {
         console.log(`[MCP Server] Listening on http://127.0.0.1:${tryPort}/mcp`);
         return tryPort;
       } catch (err: unknown) {
-        const nodeErr = err as NodeJS.ErrnoException;
-        if (nodeErr.code === 'EADDRINUSE') {
+        if (isAddressInUseError(err)) {
           console.log(`[MCP Server] Port ${tryPort} in use, trying next...`);
-          lastError = nodeErr;
+          lastError = err as NodeJS.ErrnoException;
           continue;
         }
         throw err; // 非端口占用错误直接抛出
@@ -334,125 +272,35 @@ export class McpHttpServer {
 
   /** 处理 POST - JSON-RPC 消息 */
   private async handlePost(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // Session 验证：初始化后，检查客户端发来的 Mcp-Session-Id 是否匹配
-    if (this.sessionInitialized) {
-      const clientSessionId = req.headers['mcp-session-id'] as string | undefined;
-      if (clientSessionId && clientSessionId !== this.sessionId) {
-        res.writeHead(409, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          jsonrpc: '2.0',
-          error: { code: -32600, message: 'Session ID mismatch' },
-        }));
-        return;
-      }
+    if (!validateSessionId(req, res, this.sessionInitialized, this.sessionId)) {
+      return;
     }
 
     const body = await this.readBody(req);
 
-    let message: JsonRpcRequest | JsonRpcRequest[];
-    try {
-      message = JSON.parse(body);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        jsonrpc: '2.0',
-        error: { code: -32700, message: 'Parse error' },
-      }));
+    const message = parseJsonRpcMessage(body, res);
+    if (!message) {
       return;
     }
 
-    // 处理批量或单条消息
     if (Array.isArray(message)) {
-      const responses: JsonRpcResponse[] = [];
-      for (const msg of message) {
-        const response = await this.processMessage(msg);
-        if (response) {
-          responses.push(response);
-        }
-      }
-      if (responses.length > 0) {
-        res.writeHead(200, {
-          'Content-Type': 'application/json',
-          'Mcp-Session-Id': this.sessionId,
-        });
-        res.end(JSON.stringify(responses));
-      } else {
-        res.writeHead(202);
-        res.end();
-      }
-    } else {
-      // 对于 tools/call，立即发送 SSE 响应头并启动心跳，
-      // 防止 Node.js undici 的 headersTimeout/bodyTimeout (300s) 导致超时断开
-      if (message.method === 'tools/call') {
-        // 1. 立即发送响应头，避免 headersTimeout
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-          'Mcp-Session-Id': this.sessionId,
-        });
-
-        // 2. 启动心跳定时器，每 2 分钟发送 SSE 注释，持续重置 bodyTimeout
-        const keepaliveInterval = setInterval(() => {
-          try {
-            if (!res.destroyed) {
-              res.write(':keepalive\n\n');
-            }
-          } catch {
-            clearInterval(keepaliveInterval);
-          }
-        }, POST_KEEPALIVE_INTERVAL_MS);
-
-        // 3. 监听客户端断开，取消挂起的工具调用
-        let clientDisconnected = false;
-        req.once('close', () => {
-          if (!res.writableFinished) {
-            clientDisconnected = true;
-            console.log('[MCP Server] Client disconnected during tools/call');
-            this.toolCallCancelHandler?.();
-          }
-        });
-
-        try {
-          // 4. 等待工具执行完成（可能因等待用户输入而耗时很久）
-          const response = await this.processMessage(message);
-          clearInterval(keepaliveInterval);
-
-          // 客户端已断开，无需写入响应
-          if (clientDisconnected || res.destroyed) {
-            return;
-          }
-
-          if (response) {
-            res.write(`data: ${JSON.stringify(response)}\n\n`);
-          }
-        } catch (err) {
-          clearInterval(keepaliveInterval);
-          const errResponse: JsonRpcResponse = {
-            jsonrpc: '2.0',
-            id: message.id ?? 0,
-            error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
-          };
-          res.write(`data: ${JSON.stringify(errResponse)}\n\n`);
-        }
-        if (!res.destroyed) {
-          res.end();
-        }
-      } else {
-        const response = await this.processMessage(message);
-        if (response) {
-          res.writeHead(200, {
-            'Content-Type': 'application/json',
-            'Mcp-Session-Id': this.sessionId,
-          });
-          res.end(JSON.stringify(response));
-        } else {
-          // 通知消息 - 无需响应
-          res.writeHead(202);
-          res.end();
-        }
-      }
+      await processBatchMessages(message, (msg) => this.processMessage(msg), res, this.sessionId);
+      return;
     }
+
+    if (message.method === 'tools/call') {
+      await handleToolCallStream({
+        req,
+        res,
+        message,
+        sessionId: this.sessionId,
+        processMessage: (msg) => this.processMessage(msg),
+        onClientDisconnected: this.toolCallCancelHandler || undefined,
+      });
+      return;
+    }
+
+    await processStandardMessage(message, (msg) => this.processMessage(msg), res, this.sessionId);
   }
 
   // ============ JSON-RPC 消息处理 ============
@@ -491,32 +339,12 @@ export class McpHttpServer {
   /** 处理 initialize */
   private handleInitialize(msg: JsonRpcRequest): JsonRpcResponse {
     this.sessionInitialized = true;
-    return {
-      jsonrpc: '2.0',
-      id: msg.id!,
-      result: {
-        protocolVersion: '2025-03-26',
-        capabilities: {
-          tools: { listChanged: false },
-        },
-        serverInfo: {
-          name: 'copilot-super',
-          version: '1.0.0',
-        },
-      },
-    };
+    return buildInitializeResponse(msg);
   }
 
   /** 处理 tools/list */
   private handleToolsList(msg: JsonRpcRequest): JsonRpcResponse {
-    const toolName = getMcpToolName(this.actualPort || this.port);
-    return {
-      jsonrpc: '2.0',
-      id: msg.id!,
-      result: {
-        tools: [buildToolDefinition(toolName)],
-      },
-    };
+    return buildToolsListResponse(msg, this.actualPort || this.port);
   }
 
   /** 处理 tools/call */
@@ -527,44 +355,14 @@ export class McpHttpServer {
 
     const expectedToolName = getMcpToolName(this.actualPort || this.port);
     if (toolName !== expectedToolName) {
-      return {
-        jsonrpc: '2.0',
-        id: msg.id!,
-        error: { code: -32602, message: `Unknown tool: ${toolName}` },
-      };
+      return buildUnknownToolResponse(msg, toolName);
     }
 
     if (!this.toolCallHandler) {
-      return {
-        jsonrpc: '2.0',
-        id: msg.id!,
-        result: {
-          content: [{ type: 'text', text: 'Error: No tool handler registered' }],
-          isError: true,
-        },
-      };
+      return buildMissingHandlerResponse(msg);
     }
 
-    try {
-      const userResponse = await this.toolCallHandler(toolArgs);
-      return {
-        jsonrpc: '2.0',
-        id: msg.id!,
-        result: {
-          content: [{ type: 'text', text: userResponse }],
-        },
-      };
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      return {
-        jsonrpc: '2.0',
-        id: msg.id!,
-        result: {
-          content: [{ type: 'text', text: `Error: ${errMsg}` }],
-          isError: true,
-        },
-      };
-    }
+    return buildToolCallResult(msg, this.toolCallHandler, toolArgs);
   }
 
   // ============ 工具方法 ============
