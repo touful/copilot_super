@@ -39,7 +39,7 @@ export function buildResolvedUserResponse(args: {
   }
 
   const suffix = toolName ? `，每次任务完成之后请调用${toolName}进行汇报。` : '';
-  return `${fullPrefix}\n\n[待办任务]\n${text}${suffix}`;
+  return `${fullPrefix}\n\n[新任务]\n${text}${suffix}`;
 }
 
 export function enqueueUserResponse(
