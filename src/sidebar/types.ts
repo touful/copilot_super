@@ -35,6 +35,7 @@ export type WebviewToExtMessage =
   | { type: 'choiceSelected'; choice: string }
   | { type: 'clearHistory' }
   | { type: 'copyPrompt' }
+  | { type: 'copyRules' }
   | { type: 'copyText'; text: string }
   | { type: 'saveRules'; globalRules: string }
   | { type: 'requestRules' }
@@ -53,7 +54,7 @@ export type WebviewToExtMessage =
   | { type: 'ready' };
 
 export type ExtToWebviewMessage =
-  | { type: 'showPrompt'; title: string; summary: string; choices: string[]; defaultFeedback: string; timestamp: number; autoResponded: boolean }
+  | { type: 'showPrompt'; title: string; summary: string; choices: string[]; timestamp: number; autoResponded: boolean }
   | { type: 'responseAccepted' }
   | { type: 'requestCancelled' }
   | { type: 'historyCleared' }
@@ -73,7 +74,6 @@ export type SidebarToolCallViewModel = {
   title: string;
   summary: string;
   choices: string[];
-  defaultFeedback: string;
 };
 
 export function normalizeToolCallParams(params: ToolCallParams): SidebarToolCallViewModel {
@@ -81,6 +81,5 @@ export function normalizeToolCallParams(params: ToolCallParams): SidebarToolCall
     title: params.title || '来自 Copilot',
     summary: params.summary || '',
     choices: params.choices || [],
-    defaultFeedback: params.default_feedback || '',
   };
 }

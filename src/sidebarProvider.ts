@@ -13,7 +13,7 @@ import {
   clearHistoryEntries,
   persistHistory,
 } from './sidebar/historyStore';
-import { buildFullPrefix } from './sidebar/prefixBuilder';
+import { buildFullPrefix, buildRulesText } from './sidebar/prefixBuilder';
 import {
   clearQueuedResponses,
   shiftQueuedResponse,
@@ -163,7 +163,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   /** 处理工具调用 - 展示信息并等待用户输入 */
   async handleToolCall(params: ToolCallParams): Promise<string> {
-    const { title, summary, choices, defaultFeedback } = normalizeToolCallParams(params);
+    const { title, summary, choices } = normalizeToolCallParams(params);
 
     // 记录 Copilot 消息 (无论是否立即返回，都记录)
     this.messageHistory = appendHistoryEntry(this.messageHistory, {
@@ -181,11 +181,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     if (this.responseQueue.length > 0) {
       const queuedResult = shiftQueuedResponse(this.responseQueue);
       this.responseQueue = queuedResult.queue;
-      const queued = queuedResult.item!;
+      const queued = queuedResult.item;
+      // 安全检查：确保队列项存在
+      if (!queued) {
+        return '';
+      }
       const response = queued.full;
-      
+
       // 更新 Webview 显示 (让用户看到 Copilot 刚才发了什么，虽然已经自动回复了)
-      this.postMessage(buildShowPromptMessage({ title, summary, choices, defaultFeedback }, true));
+      this.postMessage(buildShowPromptMessage({ title, summary, choices }, true));
 
       // 队列被消费，同步队列状态到 Webview
       this.syncQueueInfo();
@@ -205,7 +209,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     // 发送到 Webview
-    this.postMessage(buildShowPromptMessage({ title, summary, choices, defaultFeedback }, false));
+    this.postMessage(buildShowPromptMessage({ title, summary, choices }, false));
 
     // 等待用户响应
     return new Promise<string>((resolve) => {
@@ -282,24 +286,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   getRulesText(): string {
-    const parts: string[] = [];
-
-    if (this.globalRules.trim()) {
-      parts.push('[全局规则]');
-      parts.push(this.globalRules.trim());
-    }
-
-    const orderedRules = this.workspaceRuleTemplate
-      .map((id) => this.ruleTemplates.find((template) => template.id === id))
-      .filter((template): template is RuleTemplate => !!template)
-      .map((template, index) => `${index + 1}. ${template.content}`);
-
-    if (orderedRules.length > 0) {
-      parts.push('[规则模板]');
-      parts.push(orderedRules.join('\n'));
-    }
-
-    return parts.join('\n');
+    return buildRulesText(this.globalRules, this.workspaceRuleTemplate, this.ruleTemplates);
   }
 
   refresh(): void {
@@ -479,6 +466,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     <span class="header-text" id="statusText">MCP 服务就绪</span>
     <span class="header-state-pill" id="headerStatePill" aria-live="polite">就绪</span>
     <span class="queue-badge" id="queueBadge" title="排队中的消息数" aria-live="polite">0</span>
+    <button class="copy-rules-btn" id="copyRulesBtn" title="复制规则" aria-label="复制规则">复制规则</button>
     <button class="activate-prefix-btn" id="activateBtn" title="复制前置提示词" aria-label="复制前置提示词">激活前缀</button>
     <button class="header-icon-btn" id="clearBtn" title="清除对话" aria-label="清除对话"><span role="img" aria-hidden="true">🗑️</span></button>
   </div>

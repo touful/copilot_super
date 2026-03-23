@@ -36,6 +36,9 @@ export function createSidebarMessageHandler(handlers: SidebarMessageHandlers) {
       case 'copyPrompt':
         await vscode.commands.executeCommand('copilot-super.copyPrompt');
         return;
+      case 'copyRules':
+        await vscode.commands.executeCommand('copilot-super.copyRules');
+        return;
       case 'copyText':
         if (msg.text) {
           await vscode.env.clipboard.writeText(msg.text);

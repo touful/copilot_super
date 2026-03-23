@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { Workflow } from './types';
+import { deleteItem, mergeItems, persistItems, saveItem } from './storeUtils';
 
 type WorkflowFileEntry = {
   id: string;
@@ -38,40 +39,11 @@ export function getDefaultWorkflows(_extensionPath?: string): Workflow[] {
   }
 }
 
-export function saveWorkflow(workflows: Workflow[], workflow: Workflow): Workflow[] {
-  const nextWorkflows = [...workflows];
-  const index = nextWorkflows.findIndex((item) => item.id === workflow.id);
+export const saveWorkflow = saveItem<Workflow>;
 
-  if (index >= 0) {
-    nextWorkflows[index] = workflow;
-  } else {
-    nextWorkflows.push(workflow);
-  }
+export const deleteWorkflow = deleteItem<Workflow>;
 
-  return nextWorkflows;
-}
+export const mergeWorkflowsFromPrompt = mergeItems<Workflow>;
 
-export function deleteWorkflow(workflows: Workflow[], id: string): Workflow[] {
-  return workflows.filter((workflow) => workflow.id !== id);
-}
-
-export function mergeWorkflowsFromPrompt(
-  storedWorkflows: Workflow[],
-  promptWorkflows: Workflow[]
-): Workflow[] {
-  if (promptWorkflows.length === 0) {
-    return storedWorkflows;
-  }
-
-  const promptIds = new Set(promptWorkflows.map((item) => item.id));
-  const customWorkflows = storedWorkflows.filter((item) => !promptIds.has(item.id));
-
-  return [...promptWorkflows, ...customWorkflows];
-}
-
-export async function persistWorkflows(
-  context: vscode.ExtensionContext,
-  workflows: Workflow[]
-): Promise<void> {
-  await context.globalState.update('copilot-super.workflows', workflows);
-}
+export const persistWorkflows = (context: vscode.ExtensionContext, workflows: Workflow[]) =>
+  persistItems(context, 'copilot-super.workflows', workflows);

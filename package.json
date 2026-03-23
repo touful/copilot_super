@@ -2,7 +2,7 @@
   "name": "copilot-super",
   "displayName": "Copilot Super - 无限对话模式",
   "description": "通过 MCP 服务实现与 GitHub Copilot 的多轮交互，在单次计费周期内完成复杂任务",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "publisher": "touful",
   "repository": {
     "type": "git",
@@ -57,6 +57,12 @@
       {
         "command": "copilot-super.copyPrompt",
         "title": "复制前置提示词",
+        "category": "Copilot Super",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "copilot-super.copyRules",
+        "title": "复制规则",
         "category": "Copilot Super",
         "icon": "$(copy)"
       }

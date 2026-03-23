@@ -223,18 +223,26 @@ export class McpHttpServer {
   }
 
   private setCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse): void {
-    // 限制 CORS：仅允许 VS Code 内部请求和无 Origin 的请求（Node.js/Copilot）
+    // 限制 CORS：仅允许 VS Code Webview 和本机请求
     const origin = req.headers.origin;
+    const remoteAddress = req.socket.remoteAddress;
+    const isLocalRequest = !!remoteAddress && this.isLoopbackAddress(remoteAddress);
+
     if (origin && origin.startsWith('vscode-webview://')) {
       res.setHeader('Access-Control-Allow-Origin', origin);
-    } else if (!origin) {
-      // Node.js 请求不携带 Origin 头，允许通过
+    } else if (!origin && isLocalRequest) {
+      // 本地 Node.js 请求（无 Origin 头但来自本机）
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
-    // 对于有 Origin 但非 vscode-webview:// 的请求，不设置 CORS 头
+    // 其他来源不设置 CORS 头，拒绝跨域请求
+
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id');
     res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
+  }
+
+  private isLoopbackAddress(address: string): boolean {
+    return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
   }
 
   /** 处理 GET - SSE 长连接 */
@@ -253,10 +261,13 @@ export class McpHttpServer {
       try {
         res.write(':heartbeat\n\n');
       } catch {
+        // 连接已断开，清理资源
         clearInterval(keepAlive);
+        this.sseConnections.delete(res);
       }
     }, SSE_HEARTBEAT_INTERVAL_MS);
 
+    // 连接关闭时清理资源
     req.on('close', () => {
       clearInterval(keepAlive);
       this.sseConnections.delete(res);
@@ -276,7 +287,19 @@ export class McpHttpServer {
       return;
     }
 
-    const body = await this.readBody(req);
+    let body: string;
+    try {
+      body = await this.readBody(req);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isTooLarge = message.includes('请求体超过');
+      res.writeHead(isTooLarge ? 413 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32700, message: isTooLarge ? 'Request too large' : 'Invalid request body' },
+      }));
+      return;
+    }
 
     const message = parseJsonRpcMessage(body, res);
     if (!message) {

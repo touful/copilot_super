@@ -154,6 +154,31 @@ export function getHeaderStyles(): string {
       transform: translateY(0);
     }
 
+    /* Copy Rules Button */
+    .copy-rules-btn {
+      background: transparent;
+      color: var(--vscode-foreground);
+      border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+      cursor: pointer;
+      font-size: var(--font-sm);
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
+      flex-shrink: 0;
+      font-weight: 500;
+      transition: all var(--transition-fast);
+      white-space: nowrap;
+    }
+
+    .copy-rules-btn:hover {
+      background: color-mix(in srgb, var(--vscode-focusBorder) 15%, transparent);
+      border-color: var(--vscode-focusBorder);
+      color: var(--vscode-focusBorder);
+    }
+
+    .copy-rules-btn:active {
+      transform: scale(0.98);
+    }
+
     /* Activate Button */
     .activate-prefix-btn {
       background: var(--vscode-button-background);

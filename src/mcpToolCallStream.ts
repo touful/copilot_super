@@ -52,10 +52,15 @@ export async function handleToolCallStream(args: {
     }
   } catch (err) {
     clearInterval(keepaliveInterval);
+    // 安全：不泄漏详细错误信息，仅返回通用错误
+    console.error('[MCP Server] Tool call error:', err instanceof Error ? err.message : 'Unknown error');
+    if (clientDisconnected || res.destroyed) {
+      return;
+    }
     const errResponse: JsonRpcResponse = {
       jsonrpc: '2.0',
       id: message.id ?? 0,
-      error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+      error: { code: -32603, message: 'Internal error' },
     };
     res.write(`data: ${JSON.stringify(errResponse)}\n\n`);
   }

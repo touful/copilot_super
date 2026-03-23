@@ -48,10 +48,6 @@ export function buildToolDefinition(toolName: string) {
           items: { type: 'string' },
           description: '供用户选择的选项列表',
         },
-        default_feedback: {
-          type: 'string',
-          description: '优化下一步的提示词',
-        },
       },
       required: ['title'],
     },

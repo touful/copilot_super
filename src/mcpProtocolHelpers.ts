@@ -28,10 +28,36 @@ export function parseJsonRpcMessage(
   body: string,
   res: http.ServerResponse
 ): JsonRpcRequest | JsonRpcRequest[] | null {
+  // 安全检查：拒绝非字符串或空输入
+  if (!body || typeof body !== 'string') {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      jsonrpc: '2.0',
+      error: { code: -32700, message: 'Invalid request' },
+    }));
+    return null;
+  }
+
+  // 安全检查：请求体过大（防止缓冲区溢出攻击）
+  if (body.length > 1024 * 1024) {
+    res.writeHead(413, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      jsonrpc: '2.0',
+      error: { code: -32700, message: 'Request too large' },
+    }));
+    return null;
+  }
+
   try {
-    return JSON.parse(body) as JsonRpcRequest | JsonRpcRequest[];
+    const parsed = JSON.parse(body);
+    // 安全检查：确保解析结果为有效对象
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('Invalid JSON-RPC structure');
+    }
+    return parsed as JsonRpcRequest | JsonRpcRequest[];
   } catch (parseError) {
-    console.error('[MCP Protocol] Failed to parse JSON-RPC message:', parseError instanceof Error ? parseError.message : String(parseError));
+    // 不泄漏详细错误信息，防止信息泄露
+    console.error('[MCP Protocol] Failed to parse JSON-RPC message');
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       jsonrpc: '2.0',
@@ -39,6 +65,20 @@ export function parseJsonRpcMessage(
     }));
     return null;
   }
+}
+
+/** 发送 JSON-RPC 响应的辅助函数 */
+function sendJsonRpcResponse(
+  res: http.ServerResponse,
+  response: JsonRpcResponse | JsonRpcResponse[],
+  sessionId: string,
+  statusCode: number = 200
+): void {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json',
+    'Mcp-Session-Id': sessionId,
+  });
+  res.end(JSON.stringify(response));
 }
 
 export async function processBatchMessages(
@@ -56,11 +96,7 @@ export async function processBatchMessages(
   }
 
   if (responses.length > 0) {
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Mcp-Session-Id': sessionId,
-    });
-    res.end(JSON.stringify(responses));
+    sendJsonRpcResponse(res, responses, sessionId);
     return;
   }
 
@@ -76,11 +112,7 @@ export async function processStandardMessage(
 ): Promise<void> {
   const response = await processMessage(message);
   if (response) {
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Mcp-Session-Id': sessionId,
-    });
-    res.end(JSON.stringify(response));
+    sendJsonRpcResponse(res, response, sessionId);
     return;
   }
 

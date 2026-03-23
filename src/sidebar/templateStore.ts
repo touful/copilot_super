@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { RuleTemplate } from './types';
+import { mergeItems, persistItems, saveItem } from './storeUtils';
 
 type RuleTemplateFileEntry = Pick<RuleTemplate, 'id' | 'name' | 'content'> & {
   enabled?: boolean;
@@ -37,36 +38,9 @@ export function getDefaultTemplates(_extensionPath?: string): RuleTemplate[] {
   }
 }
 
-export function saveTemplate(templates: RuleTemplate[], template: RuleTemplate): RuleTemplate[] {
-  const nextTemplates = [...templates];
-  const index = nextTemplates.findIndex((item) => item.id === template.id);
+export const saveTemplate = saveItem<RuleTemplate>;
 
-  if (index >= 0) {
-    nextTemplates[index] = template;
-  } else {
-    nextTemplates.push(template);
-  }
+export const mergeTemplatesFromPrompt = mergeItems<RuleTemplate>;
 
-  return nextTemplates;
-}
-
-export function mergeTemplatesFromPrompt(
-  storedTemplates: RuleTemplate[],
-  promptTemplates: RuleTemplate[]
-): RuleTemplate[] {
-  if (promptTemplates.length === 0) {
-    return storedTemplates;
-  }
-
-  const promptIds = new Set(promptTemplates.map((item) => item.id));
-  const customTemplates = storedTemplates.filter((item) => !promptIds.has(item.id));
-
-  return [...promptTemplates, ...customTemplates];
-}
-
-export async function persistTemplates(
-  context: vscode.ExtensionContext,
-  templates: RuleTemplate[]
-): Promise<void> {
-  await context.globalState.update('copilot-super.ruleTemplates', templates);
-}
+export const persistTemplates = (context: vscode.ExtensionContext, templates: RuleTemplate[]) =>
+  persistItems(context, 'copilot-super.ruleTemplates', templates);

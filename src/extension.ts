@@ -14,6 +14,8 @@ import { createStatusBar, updateStatusBar } from './ui/statusBar';
 // ============ 常量定义 ============
 
 const DEFAULT_PORT = 55433;
+/** 新任务后缀，用于复制到剪贴板时添加 */
+const NEW_TASK_SUFFIX = '\n\n[新任务]';
 
 // ============ 模块级变量 ============
 
@@ -42,9 +44,13 @@ export async function activate(context: vscode.ExtensionContext) {
     extensionPath: context.extensionPath,
     log,
   });
+
+  // 创建 SidebarProvider 后再创建 workspaceSetup，避免循环依赖
+  let sidebarProviderInstance: SidebarProvider | undefined;
+
   const workspaceSetup = createWorkspaceSetup({
     getDefaultCopilotPrompt: promptLoader.getDefaultCopilotPrompt,
-    getRulesText: () => sidebarProvider.getRulesText(),
+    getRulesText: () => sidebarProviderInstance?.getRulesText() ?? '',
     log,
   });
 
@@ -52,6 +58,7 @@ export async function activate(context: vscode.ExtensionContext) {
   const autoStart = config.get<boolean>('autoStart', true);
 
   sidebarProvider = new SidebarProvider(context.extensionUri, context);
+  sidebarProviderInstance = sidebarProvider;
   sidebarProvider.onGetPrefix = () => {
     const toolName = getMcpToolName(getEffectivePort());
     return promptLoader.readPromptFile('prefix.txt', toolName);
@@ -99,15 +106,27 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('copilot-super.copyPrompt', async () => {
       const fullPrompt = sidebarProvider.getFullPrompt();
       if (fullPrompt) {
-        await vscode.env.clipboard.writeText(fullPrompt);
+        await vscode.env.clipboard.writeText(fullPrompt + NEW_TASK_SUFFIX);
         showNotification('Copilot Super: 前置提示词（包含规则）已复制到剪贴板');
         log('Full prompt with rules copied to clipboard');
       } else {
         const toolName = getMcpToolName(getEffectivePort());
         const promptText = promptLoader.readPromptFile('prefix.txt', toolName);
-        await vscode.env.clipboard.writeText(promptText);
+        await vscode.env.clipboard.writeText(promptText + NEW_TASK_SUFFIX);
         showNotification('Copilot Super: 前置提示词已复制到剪贴板');
         log(`Prompt copied to clipboard (tool: ${toolName})`);
+      }
+    }),
+
+    vscode.commands.registerCommand('copilot-super.copyRules', async () => {
+      const rulesText = sidebarProvider.getRulesText();
+      if (rulesText.trim()) {
+        await vscode.env.clipboard.writeText(rulesText + NEW_TASK_SUFFIX);
+        showNotification('Copilot Super: 规则已复制到剪贴板');
+        log('Rules copied to clipboard');
+      } else {
+        showNotification('Copilot Super: 当前没有规则可复制');
+        log('No rules to copy');
       }
     }),
 
@@ -154,8 +173,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export async function deactivate() {
   log('Extension deactivating...');
-  await mcpServer?.stop();
-  outputChannel?.dispose();
+  try {
+    await mcpServer?.stop();
+  } catch (err) {
+    log(`Error stopping server: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    outputChannel?.dispose();
+  } catch {
+    // 忽略销毁错误
+  }
 }
 
 async function startServer(

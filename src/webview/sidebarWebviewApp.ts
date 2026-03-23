@@ -16,6 +16,7 @@ type ElementMap = {
   statusText: HTMLSpanElement;
   headerStatePill: HTMLSpanElement;
   queueBadge: HTMLSpanElement;
+  copyRulesBtn: HTMLButtonElement;
   activateBtn: HTMLButtonElement;
   clearBtn: HTMLButtonElement;
   messages: HTMLDivElement;
@@ -223,6 +224,11 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
       addWorkflowStep();
     });
 
+    elements.copyRulesBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'copyRules' });
+      flashHeader('已复制规则');
+    });
+
     elements.activateBtn.addEventListener('click', () => {
       vscode.postMessage({ type: 'copyPrompt' });
       flashHeader('已复制前置提示词');
@@ -266,7 +272,7 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
         appendCopilotMessage(message.title, message.summary, message.timestamp);
         renderChoices(message.choices);
         updateStatus(message.autoResponded ? 'sent' : 'waiting');
-        focusInput(message.defaultFeedback);
+        focusInput();
         persistState();
         return;
       case 'responseAccepted':
@@ -907,11 +913,7 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
     persistState();
   }
 
-  function focusInput(defaultFeedback: string): void {
-    if (defaultFeedback && !elements.responseInput.value.trim()) {
-      elements.responseInput.value = defaultFeedback;
-      updateInputAssist();
-    }
+  function focusInput(): void {
     elements.responseInput.focus();
     elements.responseInput.setSelectionRange(elements.responseInput.value.length, elements.responseInput.value.length);
   }
@@ -1027,6 +1029,7 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
       statusText: requiredElement<HTMLSpanElement>('statusText'),
       headerStatePill: requiredElement<HTMLSpanElement>('headerStatePill'),
       queueBadge: requiredElement<HTMLSpanElement>('queueBadge'),
+      copyRulesBtn: requiredElement<HTMLButtonElement>('copyRulesBtn'),
       activateBtn: requiredElement<HTMLButtonElement>('activateBtn'),
       clearBtn: requiredElement<HTMLButtonElement>('clearBtn'),
       messages: requiredElement<HTMLDivElement>('messages'),

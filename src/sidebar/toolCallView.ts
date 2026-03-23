@@ -10,7 +10,6 @@ export function buildShowPromptMessage(
     title: viewModel.title,
     summary: viewModel.summary,
     choices: viewModel.choices,
-    defaultFeedback: viewModel.defaultFeedback,
     timestamp: Date.now(),
     autoResponded,
   };

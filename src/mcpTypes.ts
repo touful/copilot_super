@@ -16,7 +16,6 @@ export interface ToolCallParams {
   title?: string;
   summary?: string;
   choices?: string[];
-  default_feedback?: string;
 }
 
 export type ToolCallHandler = (params: ToolCallParams) => Promise<string>;
