@@ -55,6 +55,14 @@ export async function activate(context: vscode.ExtensionContext) {
     );
   }
 
+  // Windsurf 警告：不支持多开编辑器
+  const editorInfo = getEditorInfo();
+  if (editorInfo.type === 'windsurf') {
+    void vscode.window.showWarningMessage(
+      'Copilot Super: Windsurf 不支持多开编辑器，请确保只打开一个 Windsurf 窗口'
+    );
+  }
+
   const promptLoader = createPromptLoader({
     extensionPath: context.extensionPath,
     log,
