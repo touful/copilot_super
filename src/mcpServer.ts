@@ -1,38 +1,46 @@
 /**
- * MCP HTTP Server - 实现 MCP Streamable HTTP 传输协议
+ * MCP HTTP Server - 使用官方 MCP SDK 实现 Streamable HTTP 传输协议
  * 处理 VS Code Copilot 的 JSON-RPC 请求，注册并响应 copilot_super_N 工具调用
- * 工具名根据端口动态生成：copilot_super_{port - 55432}
  */
 
 import * as http from 'http';
 import * as crypto from 'crypto';
-import { getMcpToolName } from './mcpProtocol';
-import {
-  parseJsonRpcMessage,
-  processBatchMessages,
-  processStandardMessage,
-  validateSessionId,
-} from './mcpProtocolHelpers';
-import {
-  buildInitializeResponse,
-  buildMissingHandlerResponse,
-  buildToolCallResult,
-  buildToolsListResponse,
-  buildUnknownToolResponse,
-} from './mcpResponses';
-import { handleToolCallStream } from './mcpToolCallStream';
-import type { JsonRpcRequest, JsonRpcResponse, ToolCallHandler, ToolCallParams } from './mcpTypes';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { z } from 'zod';
 
 // ============ 常量定义 ============
 
-/** SSE 心跳间隔（毫秒） */
-const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 /** 端口重试最大次数 */
 const MAX_PORT_ATTEMPTS = 10;
-/** 请求体最大大小（字节），防止内存耗尽攻击 */
-const MAX_REQUEST_BODY_SIZE = 1024 * 1024; // 1MB
+/** 基础端口 */
+const BASE_PORT = 55432;
 
-// ============ 类型守卫 ============
+// ============ 类型定义 ============
+
+export interface ToolCallParams {
+  title?: string;
+  summary?: string;
+  choices?: string[];
+}
+
+export type ToolCallHandler = (params: ToolCallParams) => Promise<string>;
+
+// ============ 工具函数 ============
+
+/** 根据端口计算实例编号。55433→1, 55434→2, ..., 55442→10 */
+function getMcpInstanceIndex(port: number): number {
+  const index = port - BASE_PORT;
+  if (index >= 1 && index <= 10) {
+    return index;
+  }
+  return port;
+}
+
+/** 获取 MCP 工具名 (snake_case)：copilot_super_1 ~ copilot_super_10 */
+function getMcpToolName(port: number): string {
+  return `copilot_super_${getMcpInstanceIndex(port)}`;
+}
 
 /** 检查是否为端口占用错误 */
 function isAddressInUseError(err: unknown): err is NodeJS.ErrnoException {
@@ -47,21 +55,17 @@ function isAddressInUseError(err: unknown): err is NodeJS.ErrnoException {
 // ============ MCP HTTP Server ============
 
 export class McpHttpServer {
-  private server: http.Server | null = null;
-  private sessionId: string;
+  private httpServer: http.Server | null = null;
+  private mcpServer: McpServer | null = null;
+  private transport: InstanceType<typeof StreamableHTTPServerTransport> | null = null;
   private toolCallHandler: ToolCallHandler | null = null;
   private toolCallCancelHandler: (() => void) | null = null;
   private port: number;
   private actualPort: number = 0;
   private isRunning = false;
-  private sessionInitialized = false;
-
-  // SSE 连接管理
-  private sseConnections: Set<http.ServerResponse> = new Set();
 
   constructor(port: number = 55433) {
     this.port = port;
-    this.sessionId = crypto.randomUUID();
   }
 
   /** 设置工具调用处理器 */
@@ -79,14 +83,62 @@ export class McpHttpServer {
     return this.actualPort || this.port;
   }
 
+  /** 创建 MCP 服务器实例 */
+  private createMcpServer(): McpServer {
+    const port = this.actualPort || this.port;
+    const toolName = getMcpToolName(port);
+
+    const server = new McpServer(
+      {
+        name: 'copilot-super',
+        version: '1.5.0',
+      },
+      {
+        capabilities: {
+          tools: {},
+        },
+      }
+    );
+
+    // 注册工具
+    server.tool(
+      toolName,
+      {
+        title: z.string().describe('任务标题'),
+        summary: z.string().optional().describe('向用户展示的对话摘要信息'),
+        choices: z.array(z.string()).optional().describe('供用户选择的选项列表'),
+      },
+      async (args: ToolCallParams) => {
+        if (!this.toolCallHandler) {
+          return {
+            content: [{ type: 'text' as const, text: 'Error: No tool handler registered' }],
+            isError: true,
+          };
+        }
+
+        try {
+          const result = await this.toolCallHandler(args);
+          return {
+            content: [{ type: 'text' as const, text: result }],
+          };
+        } catch (error) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          return {
+            content: [{ type: 'text' as const, text: `Error: ${errMsg}` }],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    return server;
+  }
+
   /** 启动服务器（支持动态端口分配） */
   async start(): Promise<number> {
     if (this.isRunning) {
       await this.stop();
     }
-
-    this.sessionId = crypto.randomUUID();
-    this.sessionInitialized = false;
 
     // 尝试端口: 从配置端口开始递增
     let lastError: Error | null = null;
@@ -104,14 +156,14 @@ export class McpHttpServer {
           lastError = err as NodeJS.ErrnoException;
           continue;
         }
-        throw err; // 非端口占用错误直接抛出
+        throw err;
       }
     }
 
     // 所有固定端口尝试失败，回退到 OS 随机分配 (port 0)
     try {
       await this.tryListen(0);
-      const addr = this.server!.address();
+      const addr = this.httpServer!.address();
       this.actualPort = typeof addr === 'object' && addr ? addr.port : 0;
       console.log(`[MCP Server] Listening on http://127.0.0.1:${this.actualPort}/mcp (OS assigned)`);
       return this.actualPort;
@@ -121,71 +173,42 @@ export class McpHttpServer {
   }
 
   /** 尝试在指定端口监听 */
-  private tryListen(port: number): Promise<void> {
+  private async tryListen(port: number): Promise<void> {
+    // 创建 MCP 服务器
+    this.mcpServer = this.createMcpServer();
+
+    // 创建 Streamable HTTP Transport
+    this.transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+    });
+
+    // 连接 MCP 服务器到 Transport
+    await this.mcpServer.connect(this.transport);
+
+    // 创建 HTTP 服务器
+    this.httpServer = http.createServer(async (req, res) => {
+      await this.handleRequest(req, res);
+    });
+
+    // 设置超时 - 工具调用可能需要用户长时间输入
+    this.httpServer.timeout = 0;
+    this.httpServer.keepAliveTimeout = 0;
+
     return new Promise<void>((resolve, reject) => {
-      this.server = http.createServer((req, res) => {
-        this.handleRequest(req, res).catch((err) => {
-          console.error('[MCP Server] Unhandled error:', err);
-          if (!res.headersSent) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              jsonrpc: '2.0',
-              error: { code: -32603, message: 'Internal error' },
-            }));
-          }
-        });
-      });
-
-      // 设置超时 - 工具调用可能需要用户长时间输入
-      this.server.timeout = 0;
-      this.server.keepAliveTimeout = 0;
-
-      this.server.listen(port, '127.0.0.1', () => {
+      this.httpServer!.listen(port, '127.0.0.1', () => {
         this.isRunning = true;
         resolve();
       });
 
-      this.server.on('error', (err: NodeJS.ErrnoException) => {
-        this.server = null;
+      this.httpServer!.on('error', (err: NodeJS.ErrnoException) => {
+        this.httpServer = null;
         reject(err);
       });
     });
   }
 
-  /** 停止服务器 */
-  async stop(): Promise<void> {
-    // 关闭所有 SSE 连接
-    for (const conn of this.sseConnections) {
-      try { conn.end(); } catch { /* ignore */ }
-    }
-    this.sseConnections.clear();
-
-    return new Promise<void>((resolve) => {
-      if (this.server) {
-        this.server.close(() => {
-          this.isRunning = false;
-          this.server = null;
-          console.log('[MCP Server] Stopped');
-          resolve();
-        });
-        // 强制关闭所有连接
-        this.server.closeAllConnections?.();
-      } else {
-        this.isRunning = false;
-        resolve();
-      }
-    });
-  }
-
-  /** 当前是否运行中 */
-  get running(): boolean {
-    return this.isRunning;
-  }
-
-  // ============ 请求处理 ============
-
+  /** 处理 HTTP 请求 */
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // 解析 URL
     const url = new URL(req.url || '/', `http://127.0.0.1:${this.actualPort}`);
 
     // 只处理 /mcp 路径
@@ -195,35 +218,46 @@ export class McpHttpServer {
       return;
     }
 
-    // CORS 头
+    // 设置 CORS 头
     this.setCorsHeaders(req, res);
 
-    switch (req.method) {
-      case 'OPTIONS':
-        res.writeHead(204);
-        res.end();
-        break;
+    try {
+      // 读取请求体
+      const body = await this.readBody(req);
 
-      case 'GET':
-        this.handleSseConnection(req, res);
-        break;
+      // 解析 JSON
+      let parsedBody: unknown;
+      if (body) {
+        try {
+          parsedBody = JSON.parse(body);
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: { code: -32700, message: 'Parse error' },
+            id: null,
+          }));
+          return;
+        }
+      }
 
-      case 'POST':
-        await this.handlePost(req, res);
-        break;
-
-      case 'DELETE':
-        this.handleSessionDelete(res);
-        break;
-
-      default:
-        res.writeHead(405, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Method not allowed' }));
+      // 使用 Transport 处理请求
+      await this.transport!.handleRequest(req, res, parsedBody);
+    } catch (error) {
+      console.error('[MCP Server] Error handling request:', error);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal error' },
+          id: null,
+        }));
+      }
     }
   }
 
+  /** 设置 CORS 头 */
   private setCorsHeaders(req: http.IncomingMessage, res: http.ServerResponse): void {
-    // 限制 CORS：仅允许 VS Code Webview 和本机请求
     const origin = req.headers.origin;
     const remoteAddress = req.socket.remoteAddress;
     const isLocalRequest = !!remoteAddress && this.isLoopbackAddress(remoteAddress);
@@ -231,191 +265,81 @@ export class McpHttpServer {
     if (origin && origin.startsWith('vscode-webview://')) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     } else if (!origin && isLocalRequest) {
-      // 本地 Node.js 请求（无 Origin 头但来自本机）
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
-    // 其他来源不设置 CORS 头，拒绝跨域请求
 
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id');
     res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
   }
 
+  /** 检查是否为本地回环地址 */
   private isLoopbackAddress(address: string): boolean {
     return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
   }
 
-  /** 处理 GET - SSE 长连接 */
-  private handleSseConnection(req: http.IncomingMessage, res: http.ServerResponse): void {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Mcp-Session-Id': this.sessionId,
-    });
-
-    this.sseConnections.add(res);
-
-    // 定期发送心跳
-    const keepAlive = setInterval(() => {
-      try {
-        res.write(':heartbeat\n\n');
-      } catch {
-        // 连接已断开，清理资源
-        clearInterval(keepAlive);
-        this.sseConnections.delete(res);
-      }
-    }, SSE_HEARTBEAT_INTERVAL_MS);
-
-    // 连接关闭时清理资源
-    req.on('close', () => {
-      clearInterval(keepAlive);
-      this.sseConnections.delete(res);
-    });
-  }
-
-  /** 处理 DELETE - 终止会话 */
-  private handleSessionDelete(res: http.ServerResponse): void {
-    this.sessionId = crypto.randomUUID();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
-  }
-
-  /** 处理 POST - JSON-RPC 消息 */
-  private async handlePost(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    if (!validateSessionId(req, res, this.sessionInitialized, this.sessionId)) {
-      return;
-    }
-
-    let body: string;
-    try {
-      body = await this.readBody(req);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const isTooLarge = message.includes('请求体超过');
-      res.writeHead(isTooLarge ? 413 : 400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        jsonrpc: '2.0',
-        error: { code: -32700, message: isTooLarge ? 'Request too large' : 'Invalid request body' },
-      }));
-      return;
-    }
-
-    const message = parseJsonRpcMessage(body, res);
-    if (!message) {
-      return;
-    }
-
-    if (Array.isArray(message)) {
-      await processBatchMessages(message, (msg) => this.processMessage(msg), res, this.sessionId);
-      return;
-    }
-
-    if (message.method === 'tools/call') {
-      await handleToolCallStream({
-        req,
-        res,
-        message,
-        sessionId: this.sessionId,
-        processMessage: (msg) => this.processMessage(msg),
-        onClientDisconnected: this.toolCallCancelHandler || undefined,
-      });
-      return;
-    }
-
-    await processStandardMessage(message, (msg) => this.processMessage(msg), res, this.sessionId);
-  }
-
-  // ============ JSON-RPC 消息处理 ============
-
-  private async processMessage(msg: JsonRpcRequest): Promise<JsonRpcResponse | null> {
-    // 通知 (无 id) 不需要响应
-    if (msg.id === undefined || msg.id === null) {
-      console.log(`[MCP Server] Notification: ${msg.method}`);
-      return null;
-    }
-
-    console.log(`[MCP Server] Request: ${msg.method} (id: ${msg.id})`);
-
-    switch (msg.method) {
-      case 'initialize':
-        return this.handleInitialize(msg);
-
-      case 'tools/list':
-        return this.handleToolsList(msg);
-
-      case 'tools/call':
-        return await this.handleToolsCall(msg);
-
-      case 'resources/list':
-        // 返回空资源列表，避免客户端报错
-        return { jsonrpc: '2.0', id: msg.id, result: { resources: [] } };
-
-      case 'ping':
-        return { jsonrpc: '2.0', id: msg.id, result: {} };
-
-      default:
-        return {
-          jsonrpc: '2.0',
-          id: msg.id,
-          error: { code: -32601, message: `Method not found: ${msg.method}` },
-        };
-    }
-  }
-
-  /** 处理 initialize */
-  private handleInitialize(msg: JsonRpcRequest): JsonRpcResponse {
-    this.sessionInitialized = true;
-    return buildInitializeResponse(msg);
-  }
-
-  /** 处理 tools/list */
-  private handleToolsList(msg: JsonRpcRequest): JsonRpcResponse {
-    return buildToolsListResponse(msg, this.actualPort || this.port);
-  }
-
-  /** 处理 tools/call */
-  private async handleToolsCall(msg: JsonRpcRequest): Promise<JsonRpcResponse> {
-    const params = msg.params as { name?: string; arguments?: ToolCallParams } | undefined;
-    const toolName = params?.name;
-    const toolArgs = params?.arguments || {};
-
-    const expectedToolName = getMcpToolName(this.actualPort || this.port);
-    if (toolName !== expectedToolName) {
-      return buildUnknownToolResponse(msg, toolName);
-    }
-
-    if (!this.toolCallHandler) {
-      return buildMissingHandlerResponse(msg);
-    }
-
-    return buildToolCallResult(msg, this.toolCallHandler, toolArgs);
-  }
-
-  // ============ 工具方法 ============
-
+  /** 读取请求体 */
   private readBody(req: http.IncomingMessage): Promise<string> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let totalSize = 0;
-      let rejected = false;
+      const maxSize = 1024 * 1024; // 1MB
+
       req.on('data', (chunk: Buffer) => {
-        if (rejected) return;
         totalSize += chunk.length;
-        if (totalSize > MAX_REQUEST_BODY_SIZE) {
-          rejected = true;
+        if (totalSize > maxSize) {
           req.destroy();
-          reject(new Error(`请求体超过 ${MAX_REQUEST_BODY_SIZE} 字节限制`));
+          reject(new Error('Request body too large'));
           return;
         }
         chunks.push(chunk);
       });
+
       req.on('end', () => {
-        if (!rejected) resolve(Buffer.concat(chunks).toString('utf-8'));
+        resolve(Buffer.concat(chunks).toString('utf-8'));
       });
-      req.on('error', (err) => {
-        if (!rejected) reject(err);
-      });
+
+      req.on('error', reject);
     });
+  }
+
+  /** 停止服务器 */
+  async stop(): Promise<void> {
+    if (this.transport) {
+      try {
+        await this.transport.close();
+      } catch (e) {
+        console.error('[MCP Server] Error closing transport:', e);
+      }
+      this.transport = null;
+    }
+
+    if (this.mcpServer) {
+      try {
+        await this.mcpServer.close();
+      } catch (e) {
+        console.error('[MCP Server] Error closing MCP server:', e);
+      }
+      this.mcpServer = null;
+    }
+
+    if (this.httpServer) {
+      return new Promise<void>((resolve) => {
+        this.httpServer!.close(() => {
+          this.isRunning = false;
+          this.httpServer = null;
+          console.log('[MCP Server] Stopped');
+          resolve();
+        });
+        this.httpServer!.closeAllConnections?.();
+      });
+    } else {
+      this.isRunning = false;
+    }
+  }
+
+  /** 当前是否运行中 */
+  get running(): boolean {
+    return this.isRunning;
   }
 }

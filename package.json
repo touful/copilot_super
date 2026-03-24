@@ -161,6 +161,8 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "marked": "^17.0.5"
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "marked": "^17.0.5",
+    "zod": "^4.3.6"
   }
 }
