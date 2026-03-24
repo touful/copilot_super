@@ -1,4 +1,4 @@
-import type { ToolCallParams } from '../mcpTypes';
+import type { ToolCallParams } from '../mcpServer';
 
 export interface PendingRequest {
   resolve: (value: string) => void;

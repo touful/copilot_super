@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { ToolCallParams } from './mcpTypes';
+import type { ToolCallParams } from './mcpServer';
 import {
   appendHistoryEntry,
   clearHistoryEntries,
