@@ -47,7 +47,7 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
       return;
     }
 
-    const serverKey = `copilot-super-${port}`;
+    const serverKey = getMcpServerKey(port);
     const expectedUrl = `http://127.0.0.1:${port}/mcp`;
 
     try {
