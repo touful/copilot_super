@@ -13,9 +13,8 @@ export function buildInitializeResponse(msg: JsonRpcRequest): JsonRpcResponse {
     result: {
       protocolVersion: '2025-03-26',
       capabilities: {
+        // 只支持工具，不支持资源
         tools: { listChanged: false },
-        // 显式声明不支持资源，避免客户端尝试列出资源
-        resources: {},
       },
       serverInfo: {
         name: 'copilot-super',

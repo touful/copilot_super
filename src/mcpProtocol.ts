@@ -23,6 +23,7 @@ export function getMcpServerKey(port: number): string {
 export function buildToolDefinition(toolName: string) {
   return {
     name: toolName,
+    title: 'Copilot Super 多轮对话',
     description: [
       '用户通过远程监控的方式和你对话，此 mcp 用于节点通信（电话，唯一方式），用户能够正常看到你在进行的 task 以及 response（chat面板是监控）.',
       '',
