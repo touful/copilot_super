@@ -15,6 +15,16 @@ import { getMcpToolName } from './mcpProtocol';
 /** 端口重试最大次数 */
 const MAX_PORT_ATTEMPTS = 10;
 
+/**
+ * SSE 心跳间隔（毫秒）
+ *
+ * ⚠️ 重要：心跳机制不能删除！
+ * - 某些 MCP 客户端（如 Windsurf）使用 SSE 长连接，若长时间无数据传输会触发超时断开
+ * - 心跳至少每 4 分钟发送一次，此处设置为 3 分钟（180000ms）以提供安全余量
+ * - 删除心跳将导致 MCP 连接在长时间无活动时被客户端断开，造成工具调用失败
+ */
+const SSE_HEARTBEAT_INTERVAL_MS = 180_000; // 3 分钟
+
 // ============ 类型定义 ============
 
 export interface ToolCallParams {
@@ -54,6 +64,11 @@ export class McpHttpServer {
   private transport: InstanceType<typeof StreamableHTTPServerTransport> | null = null;
   private toolCallHandler: ToolCallHandler | null = null;
   private toolCallCancelHandler: (() => void) | null = null;
+  /**
+   * SSE 心跳定时器
+   * ⚠️ 重要：心跳机制不能删除！详见 SSE_HEARTBEAT_INTERVAL_MS 常量注释
+   */
+  private heartbeatTimer: NodeJS.Timeout | null = null;
   private port: number;
   private actualPort: number = 0;
   private isRunning = false;
@@ -75,6 +90,39 @@ export class McpHttpServer {
   /** 获取实际绑定的端口（可能与请求端口不同） */
   getActualPort(): number {
     return this.actualPort || this.port;
+  }
+
+  /**
+   * 启动 SSE 心跳
+   * ⚠️ 重要：心跳机制不能删除！详见 SSE_HEARTBEAT_INTERVAL_MS 常量注释
+   */
+  private startHeartbeat(): void {
+    this.stopHeartbeat(); // 确保不会重复启动
+    this.heartbeatTimer = setInterval(async () => {
+      // 发送 MCP ping 保持连接活跃
+      // MCP 协议定义：服务器可以主动发送 ping 请求，客户端必须响应
+      if (this.mcpServer && this.isRunning) {
+        try {
+          // 通过底层 Server 实例发送 ping（McpServer.server 是公开属性）
+          await this.mcpServer.server.ping();
+          console.log('[MCP Server] Heartbeat ping sent');
+        } catch (error) {
+          // ping 失败可能是因为客户端已断开，记录但不抛出错误
+          console.log('[MCP Server] Heartbeat ping failed:', error instanceof Error ? error.message : String(error));
+        }
+      }
+    }, SSE_HEARTBEAT_INTERVAL_MS);
+  }
+
+  /**
+   * 停止 SSE 心跳
+   * ⚠️ 重要：仅服务器关闭时调用，不要在其他场景删除心跳
+   */
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   /** 创建 MCP 服务器实例 */
@@ -193,6 +241,8 @@ export class McpHttpServer {
       await new Promise<void>((resolve, reject) => {
         this.httpServer!.listen(port, '127.0.0.1', () => {
           this.isRunning = true;
+          // ⚠️ 重要：启动心跳，不能删除！详见 SSE_HEARTBEAT_INTERVAL_MS 常量注释
+          this.startHeartbeat();
           resolve();
         });
 
@@ -210,6 +260,9 @@ export class McpHttpServer {
 
   /** 清理资源 */
   private async cleanupResources(): Promise<void> {
+    // ⚠️ 重要：停止心跳，仅在服务器关闭时调用
+    this.stopHeartbeat();
+    
     if (this.transport) {
       try {
         await this.transport.close();
