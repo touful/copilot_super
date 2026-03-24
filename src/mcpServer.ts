@@ -221,8 +221,10 @@ export class McpHttpServer {
     this.mcpServer = this.createMcpServer();
 
     // 创建 Streamable HTTP Transport
+    // 使用 stateless 模式（不设置 sessionIdGenerator）以支持更多客户端
+    // 某些 MCP 客户端（如 Windsurf）可能先发送 GET 请求建立 SSE
     this.transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => crypto.randomUUID(),
+      sessionIdGenerator: undefined, // stateless 模式
     });
 
     try {
@@ -299,6 +301,13 @@ export class McpHttpServer {
 
     // 设置 CORS 头
     this.setCorsHeaders(req, res);
+
+    // 处理 OPTIONS 预检请求（CORS）
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     try {
       // 读取请求体
