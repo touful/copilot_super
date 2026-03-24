@@ -506,6 +506,9 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
       const preview = template.content.split('\n')[0] || template.content;
       const isInWorkspace = state.workspaceTemplateIds.includes(template.id);
       const isLocked = template.locked === true;
+      // 锁定的规则已在全局生效，不需要单独添加
+      const showAddBtn = !isLocked && !isInWorkspace;
+      const addBtnText = isLocked ? '全局' : (isInWorkspace ? '已添加' : '添加');
       return `<div class="template-item${isLocked ? ' locked' : ''}" draggable="true" data-template-id="${escapeHtml(template.id)}">
         <span class="template-item-drag-handle">⋮⋮</span>
         <div class="template-item-info" data-template-edit="${escapeHtml(template.id)}">
@@ -514,7 +517,7 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
         </div>
         <div class="template-item-actions">
           <button type="button" class="lock-btn${isLocked ? ' locked' : ''}" data-template-lock="${escapeHtml(template.id)}" title="${isLocked ? '点击解锁' : '点击锁定'}">${isLocked ? '🔓' : '🔒'}</button>
-          <button type="button" data-template-add="${escapeHtml(template.id)}"${isInWorkspace ? ' disabled' : ''}>${isInWorkspace ? '已添加' : '添加'}</button>
+          <button type="button" data-template-add="${escapeHtml(template.id)}"${showAddBtn ? '' : ' disabled'}>${addBtnText}</button>
           <button type="button" data-template-edit="${escapeHtml(template.id)}">编辑</button>
           <button type="button" data-template-delete="${escapeHtml(template.id)}">删除</button>
         </div>
@@ -537,7 +540,9 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
     elements.templateList.querySelectorAll<HTMLElement>('[data-template-add]').forEach((node) => {
       node.addEventListener('click', () => {
         const id = node.dataset.templateAdd;
-        if (id && !state.workspaceTemplateIds.includes(id)) {
+        // 只有未锁定且未在工作区的规则才能添加
+        const template = state.templates.find((t) => t.id === id);
+        if (id && template && !template.locked && !state.workspaceTemplateIds.includes(id)) {
           toggleWorkspaceTemplate(id);
         }
       });
