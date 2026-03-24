@@ -347,6 +347,10 @@ export class McpHttpServer {
       case 'tools/call':
         return await this.handleToolsCall(msg);
 
+      case 'resources/list':
+        // 返回空资源列表，避免客户端报错
+        return { jsonrpc: '2.0', id: msg.id, result: { resources: [] } };
+
       case 'ping':
         return { jsonrpc: '2.0', id: msg.id, result: {} };
 
