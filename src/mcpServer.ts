@@ -221,10 +221,10 @@ export class McpHttpServer {
     this.mcpServer = this.createMcpServer();
 
     // 创建 Streamable HTTP Transport
-    // 使用 stateless 模式（不设置 sessionIdGenerator）以支持更多客户端
-    // 某些 MCP 客户端（如 Windsurf）可能先发送 GET 请求建立 SSE
+    // 使用 stateful 模式以支持长连接和会话管理
+    // stateless 模式不允许 transport 跨请求复用
     this.transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // stateless 模式
+      sessionIdGenerator: () => crypto.randomUUID(),
     });
 
     try {
@@ -313,12 +313,13 @@ export class McpHttpServer {
       // 读取请求体
       const body = await this.readBody(req);
 
-      // 解析 JSON
-      let parsedBody: unknown;
-      if (body) {
+      // 解析 JSON（仅对有请求体的请求）
+      let parsedBody: unknown = undefined;
+      if (body && body.trim()) {
         try {
           parsedBody = JSON.parse(body);
-        } catch {
+        } catch (parseError) {
+          console.error('[MCP Server] JSON parse error:', parseError);
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             jsonrpc: '2.0',
@@ -339,14 +340,19 @@ export class McpHttpServer {
         }));
         return;
       }
+      
+      // 记录请求信息用于调试
+      console.log(`[MCP Server] ${req.method} request, body length: ${body.length}, parsedBody: ${parsedBody !== undefined ? 'defined' : 'undefined'}`);
+      
       await this.transport.handleRequest(req, res, parsedBody);
     } catch (error) {
       console.error('[MCP Server] Error handling request:', error);
+      console.error('[MCP Server] Stack trace:', error instanceof Error ? error.stack : 'N/A');
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           jsonrpc: '2.0',
-          error: { code: -32603, message: 'Internal error' },
+          error: { code: -32603, message: 'Internal error', data: error instanceof Error ? error.message : String(error) },
           id: null,
         }));
       }
