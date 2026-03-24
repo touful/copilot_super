@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import { TextDecoder, TextEncoder } from 'node:util';
+import * as fs from 'fs';
+import * as path from 'path';
 import { getMcpServerKey, getMcpToolName } from '../mcpProtocol';
-import { getEditorInfo, getRulesMdUri, getMcpJsonUri } from '../utils/editorDetector';
+import { getEditorInfo, getRulesMdUri, getMcpJsonUri, getWindsurfMcpConfigPath, usesGlobalMcpConfig } from '../utils/editorDetector';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -21,9 +23,84 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
       return;
     }
 
+    // Windsurf 使用全局 MCP 配置，需要单独处理
+    if (usesGlobalMcpConfig()) {
+      await ensureWindsurfMcpConfig(port);
+    }
+
     for (const folder of workspaceFolders) {
       await ensureRulesFile(folder, port);
-      await ensureMcpJsonFile(folder, port);
+      // Windsurf 不需要在工作区创建 mcp.json
+      if (!usesGlobalMcpConfig()) {
+        await ensureMcpJsonFile(folder, port);
+      }
+    }
+  }
+
+  /**
+   * 确保 Windsurf 全局 MCP 配置文件存在并包含正确的 copilot-super 配置
+   * Windsurf 使用 ~/.codeium/windsurf/mcp_config.json 格式
+   */
+  async function ensureWindsurfMcpConfig(port: number): Promise<void> {
+    const configPath = getWindsurfMcpConfigPath();
+    if (!configPath) {
+      return;
+    }
+
+    const serverKey = `copilot-super-${port}`;
+    const expectedUrl = `http://127.0.0.1:${port}/mcp`;
+
+    try {
+      // 确保目录存在
+      const configDir = path.dirname(configPath);
+      await fs.promises.mkdir(configDir, { recursive: true });
+
+      // 读取现有配置
+      let config: { mcpServers?: Record<string, { type: string; serverUrl?: string; url?: string }> } = {};
+      try {
+        const content = await fs.promises.readFile(configPath, 'utf-8');
+        config = JSON.parse(content);
+      } catch {
+        // 文件不存在或解析失败，使用空配置
+      }
+
+      if (!config.mcpServers) {
+        config.mcpServers = {};
+      }
+
+      // 删除旧的 copilot-enhance 条目
+      for (const key of Object.keys(config.mcpServers)) {
+        if (key.startsWith('copilot-enhance')) {
+          delete config.mcpServers[key];
+          log(`Removed legacy MCP entry: ${key}`);
+        }
+      }
+
+      // 删除过期的 copilot-super 条目（端口不同）
+      for (const key of Object.keys(config.mcpServers)) {
+        if (key.startsWith('copilot-super-') && key !== serverKey) {
+          delete config.mcpServers[key];
+          log(`Removed stale MCP entry: ${key}`);
+        }
+      }
+
+      // 检查当前配置是否正确
+      const currentEntry = config.mcpServers[serverKey];
+      const currentUrl = currentEntry?.serverUrl || currentEntry?.url;
+      if (currentUrl === expectedUrl) {
+        return;
+      }
+
+      // 更新配置
+      config.mcpServers[serverKey] = {
+        type: 'http',
+        serverUrl: expectedUrl,
+      };
+
+      await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      log(`Updated Windsurf MCP config: ${serverKey} → port ${port}`);
+    } catch (err) {
+      log(`Failed to update Windsurf MCP config: ${err}`);
     }
   }
 

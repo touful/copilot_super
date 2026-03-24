@@ -4,6 +4,8 @@
  */
 
 import * as vscode from 'vscode';
+import * as os from 'os';
+import * as path from 'path';
 
 /** 支持的编辑器类型 */
 export type EditorType = 'vscode' | 'cursor' | 'windsurf' | 'lingma' | 'trae' | 'unknown';
@@ -123,4 +125,24 @@ export function getRulesMdUri(folder: vscode.WorkspaceFolder): vscode.Uri {
  */
 export function getMcpJsonUri(folder: vscode.WorkspaceFolder): vscode.Uri {
   return vscode.Uri.joinPath(folder.uri, getEditorInfo().configDir, 'mcp.json');
+}
+
+/**
+ * 获取 Windsurf 全局 MCP 配置文件路径
+ * Windsurf 使用 ~/.codeium/windsurf/mcp_config.json 而非工作区配置
+ * @returns MCP 配置文件的文件系统路径，非 Windsurf 返回 null
+ */
+export function getWindsurfMcpConfigPath(): string | null {
+  if (getEditorInfo().type !== 'windsurf') {
+    return null;
+  }
+  return path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json');
+}
+
+/**
+ * 判断当前编辑器是否使用全局 MCP 配置
+ * Windsurf 使用全局配置，其他编辑器使用工作区配置
+ */
+export function usesGlobalMcpConfig(): boolean {
+  return getEditorInfo().type === 'windsurf';
 }
