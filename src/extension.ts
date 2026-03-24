@@ -10,6 +10,7 @@ import { SidebarProvider } from './sidebarProvider';
 import { createPromptLoader } from './services/promptLoader';
 import { createWorkspaceSetup } from './services/workspaceSetup';
 import { createStatusBar, updateStatusBar } from './ui/statusBar';
+import { getConfigDir } from './utils/editorDetector';
 
 // ============ 常量定义 ============
 
@@ -61,7 +62,8 @@ export async function activate(context: vscode.ExtensionContext) {
   sidebarProviderInstance = sidebarProvider;
   sidebarProvider.onGetPrefix = () => {
     const toolName = getMcpToolName(getEffectivePort());
-    return promptLoader.readPromptFile('prefix.txt', toolName);
+    const configDir = getConfigDir();
+    return promptLoader.readPromptFile('prefix.txt', toolName, configDir);
   };
   sidebarProvider.onGetToolName = () => {
     return getMcpToolName(getEffectivePort());
@@ -111,7 +113,8 @@ export async function activate(context: vscode.ExtensionContext) {
         log('Full prompt with rules copied to clipboard');
       } else {
         const toolName = getMcpToolName(getEffectivePort());
-        const promptText = promptLoader.readPromptFile('prefix.txt', toolName);
+        const configDir = getConfigDir();
+        const promptText = promptLoader.readPromptFile('prefix.txt', toolName, configDir);
         await vscode.env.clipboard.writeText(promptText + NEW_TASK_SUFFIX);
         showNotification('Copilot Super: 前置提示词已复制到剪贴板');
         log(`Prompt copied to clipboard (tool: ${toolName})`);
