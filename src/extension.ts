@@ -1,4 +1,4 @@
-/**
+ /**
  * Copilot Super - VS Code Extension 主入口
  * 启动内嵌 MCP HTTP 服务器，注册侧边栏面板和命令
  */

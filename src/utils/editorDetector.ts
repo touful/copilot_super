@@ -38,11 +38,14 @@ const EDITOR_MATCHERS: Array<{
   namePatterns: string[];
   pathPatterns: string[];
 }> = [
-  { type: 'vscode', namePatterns: ['visual studio code', 'code'], pathPatterns: ['microsoft', 'vscode'] },
+  // 注意：Lingma 等 Fork 编辑器的 appName 可能仍返回 "Visual Studio Code"
+  // 所以必须通过 appRoot 路径识别，且要放在 vscode 之前
   { type: 'cursor', namePatterns: ['cursor'], pathPatterns: ['cursor'] },
   { type: 'windsurf', namePatterns: ['windsurf'], pathPatterns: ['windsurf'] },
-  { type: 'lingma', namePatterns: ['lingma', '通义灵码'], pathPatterns: ['lingma'] },
+  { type: 'lingma', namePatterns: ['lingma', '通义灵码'], pathPatterns: ['lingma', 'tongyi'] },
   { type: 'trae', namePatterns: ['trae'], pathPatterns: ['trae'] },
+  // VSCode 放在最后，作为默认选项
+  { type: 'vscode', namePatterns: ['visual studio code', 'code'], pathPatterns: ['microsoft', 'vscode'] },
 ];
 
 /**
@@ -54,16 +57,17 @@ export function detectEditor(): EditorInfo {
   const lowerAppName = appName.toLowerCase();
   const lowerPath = appRoot.toLowerCase();
 
-  // 优先通过 appName 判断
+  // 优先通过 appRoot 路径判断（更可靠）
+  // 因为很多 Fork 编辑器的 appName 仍返回 "Visual Studio Code"
   for (const matcher of EDITOR_MATCHERS) {
-    if (matcher.namePatterns.some((p) => lowerAppName.includes(p))) {
+    if (matcher.pathPatterns.some((p) => lowerPath.includes(p))) {
       return buildEditorInfo(matcher.type, appName, appRoot);
     }
   }
 
-  // 通过路径辅助判断（作为后备）
+  // 通过 appName 判断作为后备
   for (const matcher of EDITOR_MATCHERS) {
-    if (matcher.pathPatterns.some((p) => lowerPath.includes(p))) {
+    if (matcher.namePatterns.some((p) => lowerAppName.includes(p))) {
       return buildEditorInfo(matcher.type, appName, appRoot);
     }
   }
