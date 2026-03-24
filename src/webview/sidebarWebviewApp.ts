@@ -692,12 +692,22 @@ class TimerManager {
     elements.sendBtn.disabled = elements.responseInput.value.trim().length === 0;
   }
 
+  /** 状态消息定时器缓存 */
+  const statusMessageTimers = new Map<HTMLDivElement, number>();
+
   function showStatusMessage(element: HTMLDivElement, text: string): void {
     element.textContent = text;
     element.classList.add('show');
-    window.setTimeout(() => {
+    // 清除之前的定时器
+    const existingTimer = statusMessageTimers.get(element);
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer);
+    }
+    const timer = window.setTimeout(() => {
       element.classList.remove('show');
+      statusMessageTimers.delete(element);
     }, 1400);
+    statusMessageTimers.set(element, timer);
   }
 
   function renderWorkspaceTemplates(): void {
@@ -1050,17 +1060,31 @@ class TimerManager {
     return escapeHtml(content).replace(/\n/g, '<br>');
   }
 
+  /** 音频上下文（复用以避免重复创建） */
+  let sharedAudioContext: AudioContext | null = null;
+
   function playBeep(): void {
-    const audioContext = new AudioContext();
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    oscillator.type = 'sine';
-    oscillator.frequency.value = 880;
-    gain.gain.value = 0.05;
-    oscillator.connect(gain);
-    gain.connect(audioContext.destination);
-    oscillator.start();
-    oscillator.stop(audioContext.currentTime + 0.15);
+    try {
+      // 复用音频上下文，避免每次创建新实例
+      if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
+        sharedAudioContext = new AudioContext();
+      }
+      // 如果上下文被暂停（某些浏览器策略），尝试恢复
+      if (sharedAudioContext.state === 'suspended') {
+        void sharedAudioContext.resume();
+      }
+      const oscillator = sharedAudioContext.createOscillator();
+      const gain = sharedAudioContext.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = 880;
+      gain.gain.value = 0.05;
+      oscillator.connect(gain);
+      gain.connect(sharedAudioContext.destination);
+      oscillator.start();
+      oscillator.stop(sharedAudioContext.currentTime + 0.15);
+    } catch {
+      // 忽略音频播放错误（可能是浏览器策略限制）
+    }
   }
 
   function persistState(): void {

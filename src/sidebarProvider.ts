@@ -195,8 +195,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     });
     this.saveHistory();
 
-    // 确保侧边栏可见
-    await focusSidebarPanel(this.webviewView);
+    // 确保侧边栏可见（webviewView 可能未初始化）
+    if (this.webviewView) {
+      await focusSidebarPanel(this.webviewView);
+    }
 
     // 1. 如果有预先排队的用户消息，立即使用并返回，不进入等待状态
     if (this.responseQueue.length > 0) {
@@ -249,14 +251,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   /** 取消当前挂起的请求（客户端断开时调用） */
   cancelPendingRequest(): void {
-    if (this.pendingRequest) {
-      const { resolve } = this.pendingRequest;
-      this.pendingRequest = null;
-      // 解决 Promise，让 mcpServer 的处理链得以继续和清理
-      resolve('');
-      // 通知 Webview UI 恢复状态
-      this.postMessage({ type: 'requestCancelled' });
+    const pending = this.pendingRequest;
+    if (!pending) {
+      return;
     }
+    this.pendingRequest = null;
+    // 解决 Promise，让 mcpServer 的处理链得以继续和清理
+    pending.resolve('');
+    // 通知 Webview UI 恢复状态
+    this.postMessage({ type: 'requestCancelled' });
   }
 
   /** 清空对话历史 */

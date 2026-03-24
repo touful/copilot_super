@@ -49,7 +49,12 @@ function readJsonFile<T>(filename: string, defaultValue: T): T {
   try {
     if (fs.existsSync(filePath)) {
       const content = fs.readFileSync(filePath, 'utf-8');
-      return JSON.parse(content) as T;
+      const parsed = JSON.parse(content);
+      // 验证解析结果是有效类型
+      if (parsed === null || parsed === undefined) {
+        return defaultValue;
+      }
+      return parsed as T;
     }
   } catch (err) {
     logger.error(`Failed to read ${filename}`, err);
@@ -61,7 +66,7 @@ function readJsonFile<T>(filename: string, defaultValue: T): T {
 function writeJsonFile<T>(filename: string, data: T): void {
   ensureSharedDir();
   const filePath = path.join(getSharedDir(), filename);
-  const tempPath = `${filePath}.${process.pid}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   
   try {
     // 先写入临时文件
@@ -92,7 +97,11 @@ function isMigrated(): boolean {
 function markMigrated(): void {
   ensureSharedDir();
   const flagPath = path.join(getSharedDir(), FILES.migratedFlag);
-  fs.writeFileSync(flagPath, new Date().toISOString(), 'utf-8');
+  try {
+    fs.writeFileSync(flagPath, new Date().toISOString(), 'utf-8');
+  } catch (err) {
+    logger.error('Failed to mark migration complete', err);
+  }
 }
 
 /** 检查共享存储是否已存在 */

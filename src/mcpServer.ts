@@ -21,11 +21,11 @@ const MAX_PORT_ATTEMPTS = 10;
  * SSE 心跳间隔（毫秒）
  *
  * ⚠️ 重要：心跳机制不能删除！
- * - 某些 MCP 客户端（如 Windsurf）使用 SSE 长连接，若长时间无数据传输会触发超时断开
- * - 心跳至少每 4 分钟发送一次，此处设置为 3 分钟（180000ms）以提供安全余量
- * - 删除心跳将导致 MCP 连接在长时间无活动时被客户端断开，造成工具调用失败
+ * - Copilot 客户端有 5 分钟超时机制，需要定期发送心跳保持连接
+ * - 使用 SSE 注释行（以 : 开头）作为心跳，客户端会自动忽略
+ * - v1.4.1 使用 15 秒间隔，保持一致
  */
-const SSE_HEARTBEAT_INTERVAL_MS = 180_000; // 3 分钟
+const SSE_HEARTBEAT_INTERVAL_MS = 15_000; // 15 秒（与 v1.4.1 保持一致）
 
 // ============ 类型定义 ============
 
@@ -59,11 +59,8 @@ export class McpHttpServer {
   private transport: InstanceType<typeof StreamableHTTPServerTransport> | null = null;
   private toolCallHandler: ToolCallHandler | null = null;
   private toolCallCancelHandler: (() => void) | null = null;
-  /**
-   * SSE 心跳定时器
-   * ⚠️ 重要：心跳机制不能删除！详见 SSE_HEARTBEAT_INTERVAL_MS 常量注释
-   */
-  private heartbeatTimer: NodeJS.Timeout | null = null;
+  /** 活跃的 SSE 连接及其心跳定时器 */
+  private sseConnections: Map<http.ServerResponse, NodeJS.Timeout> = new Map();
   private port: number;
   private actualPort: number = 0;
   private isRunning = false;
@@ -89,37 +86,78 @@ export class McpHttpServer {
     return this.actualPort || this.port;
   }
 
+  /** SSE 心跳定时器（全局 MCP ping） */
+  private mcpPingTimer: NodeJS.Timeout | null = null;
+
   /**
-   * 启动 SSE 心跳
-   * ⚠️ 重要：心跳机制不能删除！详见 SSE_HEARTBEAT_INTERVAL_MS 常量注释
+   * 启动 MCP ping 心跳
+   * 用于验证连接双向可用性
    */
   private startHeartbeat(): void {
-    this.stopHeartbeat(); // 确保不会重复启动
-    this.heartbeatTimer = setInterval(async () => {
-      // 发送 MCP ping 保持连接活跃
-      // MCP 协议定义：服务器可以主动发送 ping 请求，客户端必须响应
+    this.stopHeartbeat();
+
+    // MCP ping - 协议层健康检查（每 3 分钟）
+    this.mcpPingTimer = setInterval(async () => {
       if (this.mcpServer && this.isRunning) {
         try {
-          // 通过底层 Server 实例发送 ping（McpServer.server 是公开属性）
           await this.mcpServer.server.ping();
-          logger.debug('Heartbeat ping sent');
+          logger.debug('MCP ping sent successfully');
         } catch (error) {
-          // ping 失败可能是因为客户端已断开，记录但不抛出错误
-          logger.debug('Heartbeat ping failed:', error);
+          logger.debug('MCP ping failed, connection may be unstable', error);
         }
       }
-    }, SSE_HEARTBEAT_INTERVAL_MS);
+    }, 180_000);
   }
 
   /**
-   * 停止 SSE 心跳
-   * ⚠️ 重要：仅服务器关闭时调用，不要在其他场景删除心跳
+   * 停止所有心跳
    */
   private stopHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
+    if (this.mcpPingTimer) {
+      clearInterval(this.mcpPingTimer);
+      this.mcpPingTimer = null;
     }
+    // 清理所有 SSE 连接的心跳
+    for (const [res, timer] of this.sseConnections) {
+      clearInterval(timer);
+    }
+    this.sseConnections.clear();
+  }
+
+  /**
+   * 注册 SSE 连接（每个连接独立心跳）
+ * 与 v1.4.1 保持一致的实现
+   */
+  private registerSseConnection(res: http.ServerResponse): void {
+    // 每个连接独立的心跳定时器
+    const keepAlive = setInterval(() => {
+      try {
+        res.write(':heartbeat\n\n');
+        logger.debug('SSE heartbeat sent');
+      } catch {
+        // 连接已断开，清理资源
+        clearInterval(keepAlive);
+        this.sseConnections.delete(res);
+        logger.debug('SSE connection closed (write failed)');
+      }
+    }, SSE_HEARTBEAT_INTERVAL_MS);
+
+    this.sseConnections.set(res, keepAlive);
+
+    // 连接关闭时清理资源
+    res.on('close', () => {
+      clearInterval(keepAlive);
+      this.sseConnections.delete(res);
+      logger.debug('SSE connection closed');
+    });
+  }
+
+  /**
+   * 检查响应是否为 SSE 流（Content-Type: text/event-stream）
+   */
+  private isSseResponse(res: http.ServerResponse): boolean {
+    const contentType = res.getHeader('Content-Type');
+    return typeof contentType === 'string' && contentType.includes('text/event-stream');
   }
 
   /**
@@ -177,7 +215,7 @@ export class McpHttpServer {
     const server = new McpServer(
       {
         name: 'copilot-super',
-        version: '2.0.0',
+        version: '2.0.1',
       }
     );
 
@@ -361,7 +399,15 @@ export class McpHttpServer {
 
   /** 处理 HTTP 请求 */
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = new URL(req.url || '/', `http://127.0.0.1:${this.actualPort}`);
+    // 安全解析 URL，防止空指针
+    let url: URL;
+    try {
+      url = new URL(req.url || '/', `http://127.0.0.1:${this.actualPort}`);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid URL' }));
+      return;
+    }
 
     // 只处理 /mcp 路径
     if (url.pathname !== '/mcp') {
@@ -413,7 +459,7 @@ export class McpHttpServer {
       }
       
       // 记录请求信息（仅调试模式）
-      logger.debug(`${req.method} request, body length: ${body.length}, parsedBody: ${parsedBody !== undefined ? 'defined' : 'undefined'}`);
+      logger.debug(`${req.method} request, body length: ${body?.length ?? 0}, parsedBody: ${parsedBody !== undefined ? 'defined' : 'undefined'}`);
       
       // 详细记录请求内容（仅调试模式）
       if (parsedBody && typeof parsedBody === 'object') {
@@ -425,6 +471,12 @@ export class McpHttpServer {
       }
       
       await this.transport.handleRequest(req, res, parsedBody);
+      
+      // 如果响应是 SSE 流，注册到活跃连接列表（用于心跳保活）
+      if (this.isSseResponse(res)) {
+        this.registerSseConnection(res);
+        logger.debug('SSE connection registered for keepalive');
+      }
       
       // 记录请求完成（仅调试模式）
       logger.debug(`Request ${req.method} completed, headersSent: ${res.headersSent}`);
@@ -472,10 +524,20 @@ export class McpHttpServer {
       const chunks: Buffer[] = [];
       let totalSize = 0;
       const maxSize = 1024 * 1024; // 1MB
+      let isDestroyed = false;
+
+      const cleanup = () => {
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        req.removeAllListeners('error');
+      };
 
       req.on('data', (chunk: Buffer) => {
+        if (isDestroyed) return;
         totalSize += chunk.length;
         if (totalSize > maxSize) {
+          isDestroyed = true;
+          cleanup();
           req.destroy();
           reject(new Error('Request body too large'));
           return;
@@ -484,17 +546,26 @@ export class McpHttpServer {
       });
 
       req.on('end', () => {
+        if (isDestroyed) return;
+        cleanup();
         resolve(Buffer.concat(chunks).toString('utf-8'));
       });
 
-      req.on('error', reject);
+      req.on('error', (err) => {
+        if (isDestroyed) return;
+        cleanup();
+        reject(err);
+      });
     });
   }
 
   /** 停止服务器 */
   async stop(): Promise<void> {
-    await this.cleanupResources();
+    if (!this.isRunning) {
+      return;
+    }
     this.isRunning = false;
+    await this.cleanupResources();
     logger.debug('Server stopped');
   }
 

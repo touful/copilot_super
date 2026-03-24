@@ -37,6 +37,56 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
     }
   }
 
+  /** 原子写入 JSON 文件（Windows 兼容） */
+  async function writeJsonAtomically(filePath: string, data: unknown): Promise<void> {
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8');
+    try {
+      // 尝试原子重命名（Unix 系统）
+      await fs.promises.rename(tempPath, filePath);
+    } catch {
+      // Windows 可能失败，使用 copy + delete
+      await fs.promises.copyFile(tempPath, filePath);
+      await fs.promises.unlink(tempPath);
+    }
+  }
+
+  /** 清理过期的 MCP 配置条目 */
+  function cleanupMcpEntries<T extends Record<string, { type: string; url?: string; serverUrl?: string }>>(
+    servers: T,
+    serverKey: string,
+    expectedUrl: string
+  ): { modified: boolean; servers: T } {
+    let modified = false;
+    
+    // 删除旧的 copilot-enhance 条目
+    for (const key of Object.keys(servers)) {
+      if (key.startsWith('copilot-enhance')) {
+        delete servers[key];
+        log(`Removed legacy MCP entry: ${key}`);
+        modified = true;
+      }
+    }
+
+    // 删除过期的 copilot-super 条目（端口不同）
+    for (const key of Object.keys(servers)) {
+      if (key.startsWith('copilot-super-') && key !== serverKey) {
+        delete servers[key];
+        log(`Removed stale MCP entry: ${key}`);
+        modified = true;
+      }
+    }
+
+    // 检查当前配置是否正确
+    const currentEntry = servers[serverKey];
+    const currentUrl = currentEntry?.serverUrl || currentEntry?.url;
+    if (currentUrl === expectedUrl) {
+      return { modified: false, servers };
+    }
+
+    return { modified: true, servers };
+  }
+
   /**
    * 确保 Windsurf 全局 MCP 配置文件存在并包含正确的 copilot-super 配置
    * Windsurf 使用 ~/.codeium/windsurf/mcp_config.json 格式
@@ -68,28 +118,12 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
         config.mcpServers = {};
       }
 
-      // 删除旧的 copilot-enhance 条目
-      for (const key of Object.keys(config.mcpServers)) {
-        if (key.startsWith('copilot-enhance')) {
-          delete config.mcpServers[key];
-          log(`Removed legacy MCP entry: ${key}`);
-        }
-      }
-
-      // 删除过期的 copilot-super 条目（端口不同）
-      for (const key of Object.keys(config.mcpServers)) {
-        if (key.startsWith('copilot-super-') && key !== serverKey) {
-          delete config.mcpServers[key];
-          log(`Removed stale MCP entry: ${key}`);
-        }
-      }
-
-      // 检查当前配置是否正确
-      const currentEntry = config.mcpServers[serverKey];
-      const currentUrl = currentEntry?.serverUrl || currentEntry?.url;
-      if (currentUrl === expectedUrl) {
+      // 使用公共函数清理过期条目
+      const result = cleanupMcpEntries(config.mcpServers, serverKey, expectedUrl);
+      if (!result.modified && config.mcpServers[serverKey]) {
         return;
       }
+      config.mcpServers = result.servers;
 
       // 更新配置
       config.mcpServers[serverKey] = {
@@ -98,16 +132,7 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
       };
 
       // 原子写入：先写入临时文件，再重命名（Windows 兼容：使用 copy + delete）
-      const tempPath = `${configPath}.${process.pid}.tmp`;
-      await fs.promises.writeFile(tempPath, JSON.stringify(config, null, 2), 'utf-8');
-      try {
-        // 尝试原子重命名（Unix 系统）
-        await fs.promises.rename(tempPath, configPath);
-      } catch {
-        // Windows 可能失败，使用 copy + delete
-        await fs.promises.copyFile(tempPath, configPath);
-        await fs.promises.unlink(tempPath);
-      }
+      await writeJsonAtomically(configPath, config);
       log(`Updated Windsurf MCP config: ${serverKey} → port ${port}`);
     } catch (err) {
       log(`Failed to update Windsurf MCP config: ${err}`);
@@ -192,24 +217,12 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
         parsed.servers = {};
       }
 
-      for (const key of Object.keys(parsed.servers)) {
-        if (key.startsWith('copilot-enhance')) {
-          delete parsed.servers[key];
-          log(`Removed legacy MCP entry: ${key} in ${folder.name}`);
-        }
-      }
-
-      for (const key of Object.keys(parsed.servers)) {
-        if (key.startsWith('copilot-super-') && key !== serverKey) {
-          delete parsed.servers[key];
-          log(`Removed stale MCP entry: ${key} in ${folder.name}`);
-        }
-      }
-
-      const currentUrl = parsed.servers[serverKey]?.url;
-      if (currentUrl === expectedUrl) {
+      // 使用公共函数清理过期条目
+      const result = cleanupMcpEntries(parsed.servers, serverKey, expectedUrl);
+      if (!result.modified && parsed.servers[serverKey]) {
         return;
       }
+      parsed.servers = result.servers;
 
       parsed.servers[serverKey] = {
         type: 'http',
@@ -219,6 +232,7 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
       log(`Updated mcp.json in ${folder.name}/${editorInfo.configDir}: ${serverKey} → port ${port}`);
       return;
     } catch {
+      // 文件不存在或解析失败，继续创建
     }
 
     try {
