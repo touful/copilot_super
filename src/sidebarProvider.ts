@@ -42,6 +42,15 @@ import {
 import { createSidebarMessageHandler } from './sidebar/messageHandler';
 import { getSidebarStyles } from './sidebar/styles';
 import { buildShowPromptMessage, focusSidebarPanel, notifyToolCall } from './sidebar/toolCallView';
+import {
+  migrateFromGlobalState,
+  readTemplates as readSharedTemplates,
+  writeTemplates,
+  readWorkflows as readSharedWorkflows,
+  writeWorkflows,
+  readGlobalRules as readSharedGlobalRules,
+  writeGlobalRules,
+} from './utils/sharedStorage';
 
 // ============ 常量定义 ============
 
@@ -75,21 +84,27 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   ) {
     // 从持久化存储加载对话历史
     this.messageHistory = context.workspaceState.get('copilot-super.history', []);
-    // 从持久化存储加载规则（全局共享）
-    this.globalRules = vscode.workspace.getConfiguration('copilot-super').get<string>('globalRules', '')
-      || context.globalState.get<string>('copilot-super.globalRules', '');
-    // 加载规则库（全局共享）
-    this.ruleTemplates = context.globalState.get<RuleTemplate[]>('copilot-super.ruleTemplates', []);
+    
+    // 迁移数据到共享存储（仅首次执行）
+    migrateFromGlobalState(context);
+    
+    // 从共享存储加载规则（跨编辑器共享）
+    this.globalRules = readSharedGlobalRules();
+    // 加载规则库（跨编辑器共享）
+    this.ruleTemplates = readSharedTemplates();
     // 加载工作区级别的规则模版（有序ID列表）
     this.workspaceRuleTemplate = context.workspaceState.get<string[]>('copilot-super.workspaceRuleTemplate', []);
-    this.workflows = context.globalState.get<Workflow[]>('copilot-super.workflows', []);
+    // 加载工作流（跨编辑器共享）
+    this.workflows = readSharedWorkflows();
+    
+    // 合并默认模板
     const promptTemplates = getDefaultTemplates(this.context.extensionPath);
     this.ruleTemplates = mergeTemplatesFromPrompt(this.ruleTemplates, promptTemplates);
-    context.globalState.update('copilot-super.ruleTemplates', this.ruleTemplates);
+    writeTemplates(this.ruleTemplates);
 
     const promptWorkflows = getDefaultWorkflows(this.context.extensionPath);
     this.workflows = mergeWorkflowsFromPrompt(this.workflows, promptWorkflows);
-    context.globalState.update('copilot-super.workflows', this.workflows);
+    writeWorkflows(this.workflows);
   }
 
   resolveWebviewView(
@@ -111,8 +126,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       clearHistory: () => this.clearHistory(),
       saveRules: async (globalRules) => {
         this.globalRules = globalRules;
-        await vscode.workspace.getConfiguration('copilot-super').update('globalRules', this.globalRules, vscode.ConfigurationTarget.Global);
-        await this.context.globalState.update('copilot-super.globalRules', this.globalRules);
+        writeGlobalRules(globalRules);
         await vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
         this.postMessage({ type: 'rulesSaved' });
       },
@@ -317,7 +331,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   /** 保存(新增/编辑)规则模板 */
   private handleSaveTemplate(template: RuleTemplate): void {
     this.ruleTemplates = saveTemplate(this.ruleTemplates, template);
-    persistTemplates(this.context, this.ruleTemplates);
+    writeTemplates(this.ruleTemplates);
     void vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
     this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
   }
@@ -327,7 +341,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const result = deleteTemplate(this.ruleTemplates, this.workspaceRuleTemplate, id);
     this.ruleTemplates = result.templates;
     this.workspaceRuleTemplate = result.workspaceTemplateIds;
-    persistTemplates(this.context, this.ruleTemplates);
+    writeTemplates(this.ruleTemplates);
     persistWorkspaceTemplateIds(this.context, this.workspaceRuleTemplate);
     void vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
     this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
@@ -336,13 +350,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   private async handleSaveWorkflow(workflow: Workflow): Promise<void> {
     this.workflows = saveWorkflow(this.workflows, workflow);
-    await persistWorkflows(this.context, this.workflows);
+    writeWorkflows(this.workflows);
     this.postMessage({ type: 'syncWorkflows', workflows: this.workflows });
   }
 
   private async handleDeleteWorkflow(id: string): Promise<void> {
     this.workflows = deleteWorkflow(this.workflows, id);
-    await persistWorkflows(this.context, this.workflows);
+    writeWorkflows(this.workflows);
     this.postMessage({ type: 'syncWorkflows', workflows: this.workflows });
   }
 
