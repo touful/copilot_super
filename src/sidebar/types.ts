@@ -2,7 +2,8 @@ import type { ToolCallParams } from '../mcpServer';
 
 export interface PendingRequest {
   resolve: (value: string) => void;
-  timeout?: unknown;
+  /** 定时器句柄，用于取消超时 */
+  timeout?: NodeJS.Timeout;
 }
 
 export interface RuleTemplate {
@@ -85,4 +86,30 @@ export function normalizeToolCallParams(params: ToolCallParams): SidebarToolCall
     summary: params.summary || '',
     choices: params.choices || [],
   };
+}
+
+/**
+ * 运行时类型校验：检查是否为有效的 ToolCallParams
+ */
+export function isValidToolCallParams(params: unknown): params is ToolCallParams {
+  if (params === null || typeof params !== 'object') {
+    return false;
+  }
+  const obj = params as Record<string, unknown>;
+  // 允许空对象或包含 title/summary/choices 的对象
+  if ('title' in obj && typeof obj.title !== 'string' && obj.title !== undefined) {
+    return false;
+  }
+  if ('summary' in obj && typeof obj.summary !== 'string' && obj.summary !== undefined) {
+    return false;
+  }
+  if ('choices' in obj) {
+    if (!Array.isArray(obj.choices)) {
+      return false;
+    }
+    if (!obj.choices.every((item: unknown) => typeof item === 'string')) {
+      return false;
+    }
+  }
+  return true;
 }

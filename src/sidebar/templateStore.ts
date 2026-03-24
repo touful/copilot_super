@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import type { RuleTemplate } from './types';
 import { mergeItems, persistItems, saveItem } from './storeUtils';
+import { createModuleLogger, formatError } from '../utils/logger';
+
+const logger = createModuleLogger('TemplateStore');
 
 type RuleTemplateFileEntry = Pick<RuleTemplate, 'id' | 'name' | 'content'> & {
   enabled?: boolean;
@@ -33,7 +36,7 @@ export function getDefaultTemplates(_extensionPath?: string): RuleTemplate[] {
 
     return templates.length > 0 ? templates : FALLBACK_TEMPLATES;
   } catch (parseError) {
-    console.error('[TemplateStore] Failed to parse embedded templates:', parseError instanceof Error ? parseError.message : String(parseError));
+    logger.error('Failed to parse embedded templates', parseError);
     return FALLBACK_TEMPLATES;
   }
 }

@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import type { Workflow } from './types';
 import { deleteItem, mergeItems, persistItems, saveItem } from './storeUtils';
+import { createModuleLogger } from '../utils/logger';
+
+const logger = createModuleLogger('WorkflowStore');
 
 type WorkflowFileEntry = {
   id: string;
@@ -34,7 +37,7 @@ export function getDefaultWorkflows(_extensionPath?: string): Workflow[] {
       }))
       .filter((workflow) => workflow.steps.length > 0);
   } catch (parseError) {
-    console.error('[WorkflowStore] Failed to parse embedded workflows:', parseError instanceof Error ? parseError.message : String(parseError));
+    logger.error('Failed to parse embedded workflows', parseError);
     return [];
   }
 }

@@ -51,11 +51,15 @@ import {
   readGlobalRules as readSharedGlobalRules,
   writeGlobalRules,
 } from './utils/sharedStorage';
+import { createModuleLogger } from './utils/logger';
 
 // ============ 常量定义 ============
 
 /** 发送延迟时间（毫秒） */
 const SEND_DELAY_MS = 5000;
+
+/** 日志器 */
+const logger = createModuleLogger('SidebarProvider');
 /** CSP nonce 字符长度 */
 const NONCE_LENGTH = 32;
 const WEBVIEW_SCRIPT_RELATIVE_PATH = path.join('webview', 'sidebarWebviewApp.js');
@@ -86,7 +90,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.messageHistory = context.workspaceState.get('copilot-super.history', []);
     
     // 迁移数据到共享存储（仅首次执行）
-    migrateFromGlobalState(context);
+    // 注意：构造函数中不能使用 await，这里不等待迁移完成
+    // migrateFromGlobalState 内部有双重检查锁定保护
+    void migrateFromGlobalState(context);
     
     // 从共享存储加载规则（跨编辑器共享）
     this.globalRules = readSharedGlobalRules();
@@ -171,7 +177,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     // 监听来自 Webview 的消息（使用类型化消息协议）
     webviewView.webview.onDidReceiveMessage((msg: WebviewToExtMessage) => {
       handleMessage(msg).catch((error: unknown) => {
-        console.error('[SidebarProvider] Failed to handle webview message:', msg.type, error);
+        logger.error(`Failed to handle webview message: ${msg.type}`, error);
       });
     });
   }
@@ -230,7 +236,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     return new Promise<string>((resolve) => {
       // 清除之前的等待
       if (this.pendingRequest?.timeout) {
-        clearTimeout(this.pendingRequest.timeout as NodeJS.Timeout);
+        clearTimeout(this.pendingRequest.timeout);
       }
       this.pendingRequest = { resolve };
     });
@@ -263,6 +269,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   // ============ 内部方法 ============
 
+  /**
+   * 构建用户响应文本（包含前缀、规则等）
+   */
+  private buildUserResponseText(text: string): string {
+    return buildResolvedUserResponse({
+      text,
+      prefix: this.onGetPrefix?.(),
+      toolName: this.onGetToolName?.(),
+      globalRules: this.globalRules,
+      workspaceRuleTemplate: this.workspaceRuleTemplate,
+      ruleTemplates: this.ruleTemplates,
+    });
+  }
+
   private resolveUserResponse(text: string): void {
     if (!text.trim()) {
       return;
@@ -271,14 +291,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.messageHistory = appendUserHistory(this.messageHistory, text);
     this.saveHistory();
 
-    const responseText = buildResolvedUserResponse({
-      text,
-      prefix: this.onGetPrefix?.(),
-      toolName: this.onGetToolName?.(),
-      globalRules: this.globalRules,
-      workspaceRuleTemplate: this.workspaceRuleTemplate,
-      ruleTemplates: this.ruleTemplates,
-    });
+    const responseText = this.buildUserResponseText(text);
 
     // 1. 如果有挂起的 Copilot 请求，立即解决
     if (this.pendingRequest) {
@@ -385,14 +398,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
 
       this.messageHistory = appendUserHistory(this.messageHistory, prompt);
-      const responseText = buildResolvedUserResponse({
-        text: prompt,
-        prefix: this.onGetPrefix?.(),
-        toolName: this.onGetToolName?.(),
-        globalRules: this.globalRules,
-        workspaceRuleTemplate: this.workspaceRuleTemplate,
-        ruleTemplates: this.ruleTemplates,
-      });
+      const responseText = this.buildUserResponseText(prompt);
       this.responseQueue = enqueueUserResponse(this.responseQueue, prompt, responseText);
     }
 

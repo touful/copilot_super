@@ -85,14 +85,56 @@ type InitPayload = {
 
 const NEW_WORKFLOW_OPTION = '__new_workflow__';
 
+/**
+ * 定时器管理器
+ * 封装 setTimeout/setInterval 的创建和清理，避免资源泄漏
+ */
+class TimerManager {
+  private timeoutId: number | null = null;
+  private intervalId: number | null = null;
+
+  setTimeout(callback: () => void, delay: number): void {
+    this.clearTimeout();
+    this.timeoutId = window.setTimeout(callback, delay);
+  }
+
+  setInterval(callback: () => void, delay: number): void {
+    this.clearInterval();
+    this.intervalId = window.setInterval(callback, delay);
+  }
+
+  clearTimeout(): void {
+    if (this.timeoutId !== null) {
+      window.clearTimeout(this.timeoutId);
+      this.timeoutId = null;
+    }
+  }
+
+  clearInterval(): void {
+    if (this.intervalId !== null) {
+      window.clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+  }
+
+  clearAll(): void {
+    this.clearTimeout();
+    this.clearInterval();
+  }
+
+  hasActiveTimer(): boolean {
+    return this.timeoutId !== null || this.intervalId !== null;
+  }
+}
+
 (function bootstrap() {
   const vscode = acquireVsCodeApi();
   const sendDelayMs = readInitPayload().sendDelayMs;
   const state = createInitialState(vscode);
   const elements = queryElements();
 
-  let pendingTimer: number | null = null;
-  let countdownTimer: number | null = null;
+  // 使用定时器管理器封装定时器操作
+  const pendingTimerManager = new TimerManager();
   let currentPrompt: RenderPromptPayload | null = null;
   let activeWorkflowId = '';
   let editingTemplateId: string | null = null;
@@ -364,11 +406,11 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
     elements.pendingSendArea.classList.add('visible');
     renderCountdown();
 
-    pendingTimer = window.setTimeout(() => {
+    pendingTimerManager.setTimeout(() => {
       flushPendingResponse();
     }, sendDelayMs);
 
-    countdownTimer = window.setInterval(() => {
+    pendingTimerManager.setInterval(() => {
       state.countdownRemaining = Math.max(0, state.countdownRemaining - 1);
       renderCountdown();
     }, 1000);
@@ -394,14 +436,7 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
   }
 
   function cancelPendingResponse(notifyExtension = true): void {
-    if (pendingTimer !== null) {
-      window.clearTimeout(pendingTimer);
-      pendingTimer = null;
-    }
-    if (countdownTimer !== null) {
-      window.clearInterval(countdownTimer);
-      countdownTimer = null;
-    }
+    pendingTimerManager.clearAll();
 
     const previous = state.pendingText;
     state.pendingText = null;

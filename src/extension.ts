@@ -11,6 +11,7 @@ import { createPromptLoader } from './services/promptLoader';
 import { createWorkspaceSetup } from './services/workspaceSetup';
 import { createStatusBar, updateStatusBar } from './ui/statusBar';
 import { getConfigDir, getEditorInfo } from './utils/editorDetector';
+import { globalLogManager, formatError } from './utils/logger';
 
 // ============ 常量定义 ============
 
@@ -39,6 +40,10 @@ function getEffectivePort(): number {
 
 export async function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('Copilot Super');
+  
+  // 初始化日志级别（根据配置决定是否启用调试日志）
+  globalLogManager.updateFromConfig();
+  
   log('Extension activating...');
 
   // 获取编辑器信息（缓存后复用）
@@ -178,6 +183,11 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
 
+      // 更新日志级别
+      if (e.affectsConfiguration('copilot-super.debug')) {
+        globalLogManager.updateFromConfig();
+      }
+
       if (
         e.affectsConfiguration('copilot-super.notifyOnToolCall') ||
         e.affectsConfiguration('copilot-super.soundOnToolCall') ||
@@ -202,7 +212,7 @@ export async function deactivate() {
   try {
     await mcpServer?.stop();
   } catch (err) {
-    log(`Error stopping server: ${err instanceof Error ? err.message : String(err)}`);
+    log(`Error stopping server: ${formatError(err)}`);
   }
   try {
     outputChannel?.dispose();
@@ -242,7 +252,7 @@ async function startServer(
       `Copilot Super: MCP 服务器已在端口 ${actualPort} 启动`
     );
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = formatError(err);
     updateStatusBar(statusBarItem, 'error');
     log(`Failed to start server: ${msg}`);
     vscode.window.showErrorMessage(`Copilot Super: 启动失败 - ${msg}`);
@@ -261,7 +271,7 @@ async function restartServer(
     await startServer(port, ensureWorkspaceFiles);
     showNotification('Copilot Super: MCP 服务器已重启');
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = formatError(err);
     vscode.window.showErrorMessage(`Copilot Super: 重启失败 - ${msg}`);
   }
 }

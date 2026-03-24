@@ -8,9 +8,13 @@ import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
 import type { RuleTemplate, Workflow } from '../sidebar/types';
+import { createModuleLogger, formatError } from './logger';
 
 /** 共享存储目录名 */
 const SHARED_DIR_NAME = '.copilot-super';
+
+/** 日志器 */
+const logger = createModuleLogger('SharedStorage');
 
 /** 文件名常量 */
 const FILES = {
@@ -48,7 +52,7 @@ function readJsonFile<T>(filename: string, defaultValue: T): T {
       return JSON.parse(content) as T;
     }
   } catch (err) {
-    console.error(`[SharedStorage] Failed to read ${filename}:`, err);
+    logger.error(`Failed to read ${filename}`, err);
   }
   return defaultValue;
 }
@@ -66,7 +70,7 @@ function writeJsonFile<T>(filename: string, data: T): void {
     fs.copyFileSync(tempPath, filePath);
     fs.unlinkSync(tempPath);
   } catch (err) {
-    console.error(`[SharedStorage] Failed to write ${filename}:`, err);
+    logger.error(`Failed to write ${filename}`, err);
     // 清理临时文件
     try {
       if (fs.existsSync(tempPath)) {
@@ -100,11 +104,40 @@ export function isSharedStorageExists(): boolean {
 /** 迁移锁文件名 */
 const MIGRATION_LOCK_FILE = '.migration-lock';
 
+/** 锁过期时间（毫秒）- 防止僵尸锁 */
+const LOCK_EXPIRE_MS = 30_000; // 30 秒
+
 /** 获取迁移锁（防止并发迁移） */
 function acquireMigrationLock(): boolean {
   const lockPath = path.join(getSharedDir(), MIGRATION_LOCK_FILE);
   try {
     ensureSharedDir();
+    
+    // 检查是否存在僵尸锁
+    if (fs.existsSync(lockPath)) {
+      try {
+        const content = fs.readFileSync(lockPath, 'utf-8');
+        const match = content.match(/@(\d+)$/);
+        if (match) {
+          const lockTime = parseInt(match[1], 10);
+          if (Date.now() - lockTime > LOCK_EXPIRE_MS) {
+            // 锁已过期，删除僵尸锁
+            fs.unlinkSync(lockPath);
+          } else {
+            // 锁仍在有效期内
+            return false;
+          }
+        }
+      } catch {
+        // 无法读取锁文件，尝试删除
+        try {
+          fs.unlinkSync(lockPath);
+        } catch {
+          // 忽略删除错误
+        }
+      }
+    }
+    
     // 尝试创建锁文件（如果已存在则抛出错误）
     const fd = fs.openSync(lockPath, 'wx');
     fs.writeSync(fd, `${process.pid}@${Date.now()}`);
@@ -131,7 +164,7 @@ function releaseMigrationLock(): void {
  * 仅在共享目录不存在时执行一次
  * 使用文件锁防止多编辑器并发迁移
  */
-export function migrateFromGlobalState(context: vscode.ExtensionContext): void {
+export async function migrateFromGlobalState(context: vscode.ExtensionContext): Promise<void> {
   // 已迁移则跳过
   if (isMigrated()) {
     return;
@@ -139,17 +172,13 @@ export function migrateFromGlobalState(context: vscode.ExtensionContext): void {
 
   // 获取迁移锁
   if (!acquireMigrationLock()) {
-    // 其他进程正在迁移，等待完成后检查
-    // 简单等待策略：轮询检查迁移完成
+    // 其他进程正在迁移，使用指数退避等待
     for (let i = 0; i < 10; i++) {
       if (isMigrated()) {
         return;
       }
-      // 同步等待 100ms
-      const start = Date.now();
-      while (Date.now() - start < 100) {
-        // busy wait
-      }
+      // 使用指数退避等待，初始 50ms，每次增加 50%
+      await new Promise(resolve => setTimeout(resolve, 50 * Math.pow(1.5, i)));
     }
     return;
   }
@@ -192,7 +221,7 @@ export function migrateFromGlobalState(context: vscode.ExtensionContext): void {
     }
 
     markMigrated();
-    console.log(`[SharedStorage] Migrated data to ${sharedDir}`);
+    logger.debug(`Migrated data to ${sharedDir}`);
   } finally {
     releaseMigrationLock();
   }

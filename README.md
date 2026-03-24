@@ -2,7 +2,7 @@
 
 > 通过 MCP 协议扩展 GitHub Copilot 的对话能力，在单次计费周期内完成复杂多轮任务。
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/touful/copilot_super)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/touful/copilot_super)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.99.0-007ACC.svg)](https://code.visualstudio.com/)
 
@@ -11,11 +11,26 @@
 ## ✨ 功能特性
 
 - **无限对话模式** — 突破 Copilot 单轮对话限制，通过 MCP 工具调用实现持续多轮交互
-- **智能规则系统** — 支持全局规则、工作区规则和可复用的规则模板库
+- **智能规则系统** — 支持全局规则、工作区规则和可复用的规则模板库，支持锁定机制
+- **工作流引擎** — 预设多步骤提示词流程，一键执行复杂任务链
 - **消息队列与撤回** — 预先排队消息，5 秒内可撤回误发内容
-- **自动配置** — 自动创建 `.github/copilot.md` 和 `.vscode/mcp.json`，零手动配置
+- **多编辑器支持** — 支持 VS Code、Cursor、Windsurf、Lingma、Trae 等主流编辑器
+- **自动配置** — 自动创建配置文件，零手动配置即可使用
 - **提示音通知** — MCP 调用时可选提示音和通知，不错过任何 AI 请求
 - **状态栏监控** — 实时显示 MCP 服务器运行状态
+- **调试模式** — 可选开启详细日志输出，便于问题排查
+
+---
+
+## 🖥️ 支持的编辑器
+
+| 编辑器 | 支持状态 | 配置目录 |
+|--------|----------|----------|
+| VS Code | ✅ 完全支持 | `.vscode/` |
+| Cursor | ✅ 完全支持 | `.cursor/` |
+| Windsurf | ✅ 完全支持 | `.windsurf/` (全局 MCP 配置) |
+| Lingma (通义灵码) | ✅ 完全支持 | `.lingma/` |
+| Trae | ✅ 完全支持 | `.trae/` |
 
 ---
 
@@ -31,7 +46,7 @@ git clone https://github.com/touful/copilot_super.git
 cd copilot_super
 npm install
 npm run build
-npx vsce package
+npx @vscode/vsce package
 ```
 
 ---
@@ -85,6 +100,7 @@ npx vsce package
 | `copilot-super.notifyOnToolCall` | boolean | true | 工具调用时显示通知 |
 | `copilot-super.soundOnToolCall` | boolean | false | 工具调用时播放提示音 |
 | `copilot-super.showPluginNotifications` | boolean | true | 允许插件发送通知消息 |
+| `copilot-super.debug` | boolean | false | 调试模式：启用详细日志输出 |
 
 ---
 
@@ -126,6 +142,31 @@ A: 打开 VS Code 输出面板（Output），选择 `Copilot Super` 频道
 ---
 
 ## 📝 更新日志
+
+### v2.0.0
+
+**架构优化**
+- 新增统一日志管理系统，调试模式与生产模式完全分离
+- 修复 MCP Server 竞态条件，增强多会话并发稳定性
+- 优化 SharedStorage 迁移锁机制，使用指数退避替代忙等待
+- 增强 CORS 安全配置，移除通配符源
+
+**代码质量**
+- 提取通用错误处理工具 `formatError`、`isErrorCode`
+- 提取 `buildUserResponseText` 方法消除重复代码
+- 添加 `isValidToolCallParams` 运行时参数校验
+- 优化定时器资源管理，封装 `TimerManager` 类
+
+**功能增强**
+- 新增调试模式配置项，可按需开启详细日志
+- 支持规则模板锁定机制，锁定规则在所有工作区可见
+- 新增 Windsurf 编辑器全局 MCP 配置支持
+- 工作流支持步骤拖拽排序
+
+### v1.5.0
+- 新增规则模板锁定机制，锁定的规则在所有工作区可见
+- 新增工作流步骤拖拽排序功能
+- 优化提示词结构和工作流模板读取
 
 ### v1.4.0
 - 优化 `prompts/prefix.txt` 与 `prompts/copilot-template.md` 的提示词结构

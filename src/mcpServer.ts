@@ -8,7 +8,9 @@ import * as crypto from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-import { getMcpToolName } from './mcpProtocol';
+import { getMcpToolName, getMcpInstanceIndex } from './mcpProtocol';
+import { createModuleLogger, formatError, formatErrorDetail, isErrorCode } from './utils/logger';
+import { isValidToolCallParams } from './sidebar/types';
 
 // ============ 常量定义 ============
 
@@ -35,15 +37,8 @@ export interface ToolCallParams {
 
 export type ToolCallHandler = (params: ToolCallParams) => Promise<string>;
 
-/** 检查是否为端口占用错误 */
-function isAddressInUseError(err: unknown): err is NodeJS.ErrnoException {
-  return (
-    err !== null &&
-    typeof err === 'object' &&
-    'code' in err &&
-    (err as NodeJS.ErrnoException).code === 'EADDRINUSE'
-  );
-}
+/** MCP Server 日志器 */
+const logger = createModuleLogger('MCP Server');
 
 /** 工具描述 */
 const TOOL_DESCRIPTION = [
@@ -72,6 +67,8 @@ export class McpHttpServer {
   private port: number;
   private actualPort: number = 0;
   private isRunning = false;
+  /** 防止 recreateTransport 并发调用 */
+  private isRecreating = false;
 
   constructor(port: number = 55433) {
     this.port = port;
@@ -105,10 +102,10 @@ export class McpHttpServer {
         try {
           // 通过底层 Server 实例发送 ping（McpServer.server 是公开属性）
           await this.mcpServer.server.ping();
-          console.log('[MCP Server] Heartbeat ping sent');
+          logger.debug('Heartbeat ping sent');
         } catch (error) {
           // ping 失败可能是因为客户端已断开，记录但不抛出错误
-          console.log('[MCP Server] Heartbeat ping failed:', error instanceof Error ? error.message : String(error));
+          logger.debug('Heartbeat ping failed:', error);
         }
       }
     }, SSE_HEARTBEAT_INTERVAL_MS);
@@ -130,30 +127,41 @@ export class McpHttpServer {
    * Windsurf 客户端可能发送 DELETE 关闭会话，需要重建 transport 支持新连接
    */
   private async recreateTransport(): Promise<void> {
-    // 关闭旧的 mcpServer
-    if (this.mcpServer) {
-      try {
-        await this.mcpServer.close();
-      } catch {
-        // 忽略关闭错误
-      }
+    // 防止并发调用
+    if (this.isRecreating) {
+      logger.debug('Transport recreation already in progress, skipping');
+      return;
     }
-
-    // 创建新的 MCP 服务器和 Transport
-    this.mcpServer = this.createMcpServer();
-    this.transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => crypto.randomUUID(),
-      onsessionclosed: () => {
-        console.log('[MCP Server] Session closed by client, will recreate transport on next request');
-        this.recreateTransport();
-      },
-    });
+    this.isRecreating = true;
 
     try {
-      await this.mcpServer.connect(this.transport);
-      console.log('[MCP Server] Transport recreated successfully');
-    } catch (error) {
-      console.error('[MCP Server] Failed to recreate transport:', error);
+      // 关闭旧的 mcpServer
+      if (this.mcpServer) {
+        try {
+          await this.mcpServer.close();
+        } catch {
+          // 忽略关闭错误
+        }
+      }
+
+      // 创建新的 MCP 服务器和 Transport
+      this.mcpServer = this.createMcpServer();
+      this.transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+        onsessionclosed: () => {
+          logger.info('Session closed by client, will recreate transport on next request');
+          this.recreateTransport();
+        },
+      });
+
+      try {
+        await this.mcpServer.connect(this.transport);
+        logger.debug('Transport recreated successfully');
+      } catch (error) {
+        logger.error('Failed to recreate transport', error);
+      }
+    } finally {
+      this.isRecreating = false;
     }
   }
 
@@ -162,28 +170,43 @@ export class McpHttpServer {
     const port = this.actualPort || this.port;
     const toolName = getMcpToolName(port);
 
+    logger.debug(`Creating MCP server with tool name: ${toolName}`);
+
+    // 不手动声明 capabilities，让 SDK 自动注册
+    // tool() 方法会自动调用 setToolRequestHandlers() 注册 tools: { listChanged: true }
     const server = new McpServer(
       {
         name: 'copilot-super',
-        version: '1.5.0',
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
+        version: '2.0.0',
       }
     );
 
-    // 注册工具
-    server.tool(
+    // 注册工具（使用 registerTool 方法以正确设置 title 字段）
+    // ⚠️ MCP 2025-03-26 规范要求工具定义必须包含 title 字段
+    logger.debug(`Registering tool: ${toolName}`);
+    server.registerTool(
       toolName,
-      TOOL_DESCRIPTION,
       {
-        title: z.string().describe('任务标题'),
-        summary: z.string().optional().describe('向用户展示的对话摘要信息'),
-        choices: z.array(z.string()).optional().describe('供用户选择的选项列表'),
+        title: `Copilot Super Tool ${getMcpInstanceIndex(port)}`,
+        description: TOOL_DESCRIPTION,
+        inputSchema: {
+          title: z.string().describe('任务标题'),
+          summary: z.string().optional().describe('向用户展示的对话摘要信息'),
+          choices: z.array(z.string()).optional().describe('供用户选择的选项列表'),
+        },
       },
       async (args: ToolCallParams) => {
+        logger.debug(`Tool ${toolName} called with args:`, JSON.stringify(args).substring(0, 200));
+        
+        // 验证参数结构
+        if (!isValidToolCallParams(args)) {
+          logger.error(`Tool ${toolName} received invalid params`, args);
+          return {
+            content: [{ type: 'text' as const, text: 'Error: Invalid tool call parameters' }],
+            isError: true,
+          };
+        }
+        
         if (!this.toolCallHandler) {
           return {
             content: [{ type: 'text' as const, text: 'Error: No tool handler registered' }],
@@ -193,11 +216,13 @@ export class McpHttpServer {
 
         try {
           const result = await this.toolCallHandler(args);
+          logger.debug(`Tool ${toolName} returned:`, result.substring(0, 200));
           return {
             content: [{ type: 'text' as const, text: result }],
           };
         } catch (error) {
-          const errMsg = error instanceof Error ? error.message : String(error);
+          const errMsg = formatError(error);
+          logger.error(`Tool ${toolName} error`, error);
           return {
             content: [{ type: 'text' as const, text: `Error: ${errMsg}` }],
             isError: true,
@@ -205,6 +230,7 @@ export class McpHttpServer {
         }
       }
     );
+    logger.debug(`Tool ${toolName} registered successfully`);
 
     return server;
   }
@@ -222,12 +248,12 @@ export class McpHttpServer {
       const tryPort = this.port + attempt;
       try {
         await this.tryListen(tryPort);
-        this.actualPort = tryPort;
-        console.log(`[MCP Server] Listening on http://127.0.0.1:${tryPort}/mcp`);
+        // actualPort 已在 tryListen 中设置
+        logger.info(`Server listening on port ${tryPort}`);
         return tryPort;
       } catch (err: unknown) {
-        if (isAddressInUseError(err)) {
-          console.log(`[MCP Server] Port ${tryPort} in use, trying next...`);
+        if (isErrorCode(err, 'EADDRINUSE')) {
+          logger.debug(`Port ${tryPort} in use, trying next...`);
           lastError = err as NodeJS.ErrnoException;
           continue;
         }
@@ -238,9 +264,13 @@ export class McpHttpServer {
     // 所有固定端口尝试失败，回退到 OS 随机分配 (port 0)
     try {
       await this.tryListen(0);
-      const addr = this.httpServer!.address();
+      // 安全获取地址，避免空指针风险
+      const addr = this.httpServer?.address();
+      if (!addr) {
+        throw new Error('HTTP server address is null after listen');
+      }
       this.actualPort = typeof addr === 'object' && addr ? addr.port : 0;
-      console.log(`[MCP Server] Listening on http://127.0.0.1:${this.actualPort}/mcp (OS assigned)`);
+      logger.info(`Server listening on port ${this.actualPort} (OS assigned)`);
       return this.actualPort;
     } catch (err) {
       throw lastError || err;
@@ -249,6 +279,10 @@ export class McpHttpServer {
 
   /** 尝试在指定端口监听 */
   private async tryListen(port: number): Promise<void> {
+    // ⚠️ 重要：先设置 actualPort，确保 createMcpServer() 使用正确的端口号
+    // 否则工具名会错误（如端口 55434 应该生成 copilot_super_2，而不是 copilot_super_1）
+    this.actualPort = port;
+    
     // 创建 MCP 服务器
     this.mcpServer = this.createMcpServer();
 
@@ -259,7 +293,7 @@ export class McpHttpServer {
       sessionIdGenerator: () => crypto.randomUUID(),
       // 当客户端发送 DELETE 请求关闭会话时，重建 transport 以支持新连接
       onsessionclosed: () => {
-        console.log('[MCP Server] Session closed by client, will recreate transport on next request');
+        logger.info('Session closed by client, will recreate transport on next request');
         this.recreateTransport();
       },
     });
@@ -305,16 +339,16 @@ export class McpHttpServer {
     if (this.transport) {
       try {
         await this.transport.close();
-      } catch {
-        // 忽略关闭错误
+      } catch (transportErr) {
+        logger.warn('Error closing transport during cleanup:', transportErr);
       }
       this.transport = null;
     }
     if (this.mcpServer) {
       try {
         await this.mcpServer.close();
-      } catch {
-        // 忽略关闭错误
+      } catch (closeErr) {
+        logger.warn('Error closing mcpServer during cleanup:', closeErr);
       }
       this.mcpServer = null;
     }
@@ -356,7 +390,7 @@ export class McpHttpServer {
         try {
           parsedBody = JSON.parse(body);
         } catch (parseError) {
-          console.error('[MCP Server] JSON parse error:', parseError);
+          logger.error('JSON parse error', parseError);
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             jsonrpc: '2.0',
@@ -378,18 +412,30 @@ export class McpHttpServer {
         return;
       }
       
-      // 记录请求信息用于调试
-      console.log(`[MCP Server] ${req.method} request, body length: ${body.length}, parsedBody: ${parsedBody !== undefined ? 'defined' : 'undefined'}`);
+      // 记录请求信息（仅调试模式）
+      logger.debug(`${req.method} request, body length: ${body.length}, parsedBody: ${parsedBody !== undefined ? 'defined' : 'undefined'}`);
+      
+      // 详细记录请求内容（仅调试模式）
+      if (parsedBody && typeof parsedBody === 'object') {
+        const bodyObj = parsedBody as { method?: string; params?: unknown };
+        logger.debug(`Request method: ${bodyObj.method}, id: ${(parsedBody as { id?: unknown }).id}`);
+        if (bodyObj.params) {
+          logger.debug('Request params:', JSON.stringify(bodyObj.params).substring(0, 200));
+        }
+      }
       
       await this.transport.handleRequest(req, res, parsedBody);
+      
+      // 记录请求完成（仅调试模式）
+      logger.debug(`Request ${req.method} completed, headersSent: ${res.headersSent}`);
     } catch (error) {
-      console.error('[MCP Server] Error handling request:', error);
-      console.error('[MCP Server] Stack trace:', error instanceof Error ? error.stack : 'N/A');
+      logger.error('Error handling request', error);
+      logger.error('Stack trace:', formatErrorDetail(error));
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           jsonrpc: '2.0',
-          error: { code: -32603, message: 'Internal error', data: error instanceof Error ? error.message : String(error) },
+          error: { code: -32603, message: 'Internal error', data: formatError(error) },
           id: null,
         }));
       }
@@ -402,10 +448,12 @@ export class McpHttpServer {
     const remoteAddress = req.socket.remoteAddress;
     const isLocalRequest = !!remoteAddress && this.isLoopbackAddress(remoteAddress);
 
+    // 只允许 vscode-webview 源或本地无 origin 请求
     if (origin && origin.startsWith('vscode-webview://')) {
       res.setHeader('Access-Control-Allow-Origin', origin);
     } else if (!origin && isLocalRequest) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      // 本地请求无 origin，使用特定标识而非通配符
+      res.setHeader('Access-Control-Allow-Origin', 'vscode-file://vscode-app');
     }
 
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
@@ -447,7 +495,7 @@ export class McpHttpServer {
   async stop(): Promise<void> {
     await this.cleanupResources();
     this.isRunning = false;
-    console.log('[MCP Server] Stopped');
+    logger.debug('Server stopped');
   }
 
   /** 当前是否运行中 */

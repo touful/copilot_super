@@ -1,7 +1,7 @@
 const BASE_PORT = 55432;
 
 /** 根据端口计算实例编号。55433→1, 55434→2, ..., 55442→10 */
-function getMcpInstanceIndex(port: number): number {
+export function getMcpInstanceIndex(port: number): number {
   const index = port - BASE_PORT;
   if (index >= 1 && index <= 10) {
     return index;
