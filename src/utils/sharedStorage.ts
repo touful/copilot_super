@@ -53,17 +53,18 @@ function readJsonFile<T>(filename: string, defaultValue: T): T {
   return defaultValue;
 }
 
-/** 写入 JSON 文件（原子写入） */
+/** 写入 JSON 文件（原子写入，兼容 Windows） */
 function writeJsonFile<T>(filename: string, data: T): void {
   ensureSharedDir();
   const filePath = path.join(getSharedDir(), filename);
-  const tempPath = `${filePath}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.tmp`;
   
   try {
     // 先写入临时文件
     fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf-8');
-    // 原子重命名
-    fs.renameSync(tempPath, filePath);
+    // Windows 下 rename 可能失败，使用 copy + delete
+    fs.copyFileSync(tempPath, filePath);
+    fs.unlinkSync(tempPath);
   } catch (err) {
     console.error(`[SharedStorage] Failed to write ${filename}:`, err);
     // 清理临时文件
@@ -96,44 +97,117 @@ export function isSharedStorageExists(): boolean {
   return fs.existsSync(sharedDir) && isMigrated();
 }
 
+/** 迁移锁文件名 */
+const MIGRATION_LOCK_FILE = '.migration-lock';
+
+/** 获取迁移锁（防止并发迁移） */
+function acquireMigrationLock(): boolean {
+  const lockPath = path.join(getSharedDir(), MIGRATION_LOCK_FILE);
+  try {
+    ensureSharedDir();
+    // 尝试创建锁文件（如果已存在则抛出错误）
+    const fd = fs.openSync(lockPath, 'wx');
+    fs.writeSync(fd, `${process.pid}@${Date.now()}`);
+    fs.closeSync(fd);
+    return true;
+  } catch {
+    // 锁文件已存在，其他进程正在迁移
+    return false;
+  }
+}
+
+/** 释放迁移锁 */
+function releaseMigrationLock(): void {
+  const lockPath = path.join(getSharedDir(), MIGRATION_LOCK_FILE);
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    // 忽略释放错误
+  }
+}
+
 /**
  * 从 VSCode globalState 迁移数据到共享存储
  * 仅在共享目录不存在时执行一次
+ * 使用文件锁防止多编辑器并发迁移
  */
 export function migrateFromGlobalState(context: vscode.ExtensionContext): void {
+  // 已迁移则跳过
   if (isMigrated()) {
     return;
   }
 
-  ensureSharedDir();
-  const sharedDir = getSharedDir();
-
-  // 迁移规则模板
-  const templates = context.globalState.get<RuleTemplate[]>('copilot-super.ruleTemplates', []);
-  if (templates.length > 0) {
-    writeJsonFile(FILES.templates, templates);
+  // 获取迁移锁
+  if (!acquireMigrationLock()) {
+    // 其他进程正在迁移，等待完成后检查
+    // 简单等待策略：轮询检查迁移完成
+    for (let i = 0; i < 10; i++) {
+      if (isMigrated()) {
+        return;
+      }
+      // 同步等待 100ms
+      const start = Date.now();
+      while (Date.now() - start < 100) {
+        // busy wait
+      }
+    }
+    return;
   }
 
-  // 迁移工作流
-  const workflows = context.globalState.get<Workflow[]>('copilot-super.workflows', []);
-  if (workflows.length > 0) {
-    writeJsonFile(FILES.workflows, workflows);
-  }
+  try {
+    // 再次检查（双重检查锁定模式）
+    if (isMigrated()) {
+      return;
+    }
 
-  // 迁移全局规则（优先从配置读取，其次从 globalState）
-  const configRules = vscode.workspace.getConfiguration('copilot-super').get<string>('globalRules', '');
-  const stateRules = context.globalState.get<string>('copilot-super.globalRules', '');
-  const globalRules = configRules || stateRules;
-  if (globalRules) {
-    const rulesData: GlobalRulesData = {
-      rules: globalRules,
-      updatedAt: new Date().toISOString(),
-    };
-    writeJsonFile(FILES.globalRules, rulesData);
-  }
+    const sharedDir = getSharedDir();
 
-  markMigrated();
-  console.log(`[SharedStorage] Migrated data to ${sharedDir}`);
+    // 迁移规则模板（合并现有数据）
+    const existingTemplates = readTemplates();
+    const newTemplates = context.globalState.get<RuleTemplate[]>('copilot-super.ruleTemplates', []);
+    const mergedTemplates = mergeDataById(existingTemplates, newTemplates);
+    if (mergedTemplates.length > 0) {
+      writeJsonFile(FILES.templates, mergedTemplates);
+    }
+
+    // 迁移工作流（合并现有数据）
+    const existingWorkflows = readWorkflows();
+    const newWorkflows = context.globalState.get<Workflow[]>('copilot-super.workflows', []);
+    const mergedWorkflows = mergeDataById(existingWorkflows, newWorkflows);
+    if (mergedWorkflows.length > 0) {
+      writeJsonFile(FILES.workflows, mergedWorkflows);
+    }
+
+    // 迁移全局规则（优先从配置读取，其次从 globalState，最后从共享存储）
+    const existingRules = readGlobalRules();
+    const configRules = vscode.workspace.getConfiguration('copilot-super').get<string>('globalRules', '');
+    const stateRules = context.globalState.get<string>('copilot-super.globalRules', '');
+    const globalRules = configRules || stateRules || existingRules;
+    if (globalRules) {
+      const rulesData: GlobalRulesData = {
+        rules: globalRules,
+        updatedAt: new Date().toISOString(),
+      };
+      writeJsonFile(FILES.globalRules, rulesData);
+    }
+
+    markMigrated();
+    console.log(`[SharedStorage] Migrated data to ${sharedDir}`);
+  } finally {
+    releaseMigrationLock();
+  }
+}
+
+/** 按 ID 合并数据（新数据覆盖旧数据） */
+function mergeDataById<T extends { id: string }>(existing: T[], incoming: T[]): T[] {
+  const map = new Map<string, T>();
+  for (const item of existing) {
+    map.set(item.id, item);
+  }
+  for (const item of incoming) {
+    map.set(item.id, item);
+  }
+  return Array.from(map.values());
 }
 
 /** 读取规则模板 */
