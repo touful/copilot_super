@@ -125,6 +125,38 @@ export class McpHttpServer {
     }
   }
 
+  /**
+   * 重建 Transport（会话关闭后调用）
+   * Windsurf 客户端可能发送 DELETE 关闭会话，需要重建 transport 支持新连接
+   */
+  private async recreateTransport(): Promise<void> {
+    // 关闭旧的 mcpServer
+    if (this.mcpServer) {
+      try {
+        await this.mcpServer.close();
+      } catch {
+        // 忽略关闭错误
+      }
+    }
+
+    // 创建新的 MCP 服务器和 Transport
+    this.mcpServer = this.createMcpServer();
+    this.transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => crypto.randomUUID(),
+      onsessionclosed: () => {
+        console.log('[MCP Server] Session closed by client, will recreate transport on next request');
+        this.recreateTransport();
+      },
+    });
+
+    try {
+      await this.mcpServer.connect(this.transport);
+      console.log('[MCP Server] Transport recreated successfully');
+    } catch (error) {
+      console.error('[MCP Server] Failed to recreate transport:', error);
+    }
+  }
+
   /** 创建 MCP 服务器实例 */
   private createMcpServer(): McpServer {
     const port = this.actualPort || this.port;
@@ -225,6 +257,11 @@ export class McpHttpServer {
     // stateless 模式不允许 transport 跨请求复用
     this.transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
+      // 当客户端发送 DELETE 请求关闭会话时，重建 transport 以支持新连接
+      onsessionclosed: () => {
+        console.log('[MCP Server] Session closed by client, will recreate transport on next request');
+        this.recreateTransport();
+      },
     });
 
     try {
