@@ -130,19 +130,11 @@ export function getMcpJsonUri(folder: vscode.WorkspaceFolder): vscode.Uri {
 /**
  * 获取 Windsurf 全局 MCP 配置文件路径
  * Windsurf 使用 ~/.codeium/windsurf/mcp_config.json 而非工作区配置
- * Windows 使用 %APPDATA%\Codeium\windsurf\mcp_config.json
  * @returns MCP 配置文件的文件系统路径，非 Windsurf 返回 null
  */
 export function getWindsurfMcpConfigPath(): string | null {
   if (getEditorInfo().type !== 'windsurf') {
     return null;
-  }
-  // Windows 使用 %APPDATA%\Codeium\windsurf\mcp_config.json
-  // Unix/Linux/macOS 使用 ~/.codeium/windsurf/mcp_config.json
-  const platform = process.platform;
-  if (platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, 'Codeium', 'windsurf', 'mcp_config.json');
   }
   return path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json');
 }
