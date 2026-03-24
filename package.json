@@ -128,6 +128,11 @@
           "default": false,
           "description": "MCP 工具调用时播放提示音"
         },
+        "copilot-super.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "调试模式：显示编辑器检测信息等调试日志"
+        },
         "copilot-super.showPluginNotifications": {
           "type": "boolean",
           "default": true,

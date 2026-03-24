@@ -10,7 +10,7 @@ import { SidebarProvider } from './sidebarProvider';
 import { createPromptLoader } from './services/promptLoader';
 import { createWorkspaceSetup } from './services/workspaceSetup';
 import { createStatusBar, updateStatusBar } from './ui/statusBar';
-import { getConfigDir } from './utils/editorDetector';
+import { getConfigDir, getEditorInfo } from './utils/editorDetector';
 
 // ============ 常量定义 ============
 
@@ -40,6 +40,20 @@ function getEffectivePort(): number {
 export async function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('Copilot Super');
   log('Extension activating...');
+
+  // 调试模式：显示编辑器检测信息
+  const isDebug = vscode.workspace.getConfiguration('copilot-super').get<boolean>('debug', false);
+  if (isDebug) {
+    const editorInfo = getEditorInfo();
+    log('Editor Detection:');
+    log(`  appName: ${editorInfo.appName}`);
+    log(`  appRoot: ${editorInfo.appRoot}`);
+    log(`  type: ${editorInfo.type}`);
+    log(`  configDir: ${editorInfo.configDir}`);
+    void vscode.window.showInformationMessage(
+      `Copilot Super 调试: ${editorInfo.appName} | ${editorInfo.type} | ${editorInfo.configDir}`
+    );
+  }
 
   const promptLoader = createPromptLoader({
     extensionPath: context.extensionPath,
