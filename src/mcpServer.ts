@@ -53,6 +53,7 @@ export class McpHttpServer {
   private mcpServer: McpServer | null = null;
   private transport: InstanceType<typeof StreamableHTTPServerTransport> | null = null;
   private toolCallHandler: ToolCallHandler | null = null;
+  private toolCallCancelHandler: (() => void) | null = null;
   private port: number;
   private actualPort: number = 0;
   private isRunning = false;
@@ -64,6 +65,11 @@ export class McpHttpServer {
   /** 设置工具调用处理器 */
   setToolCallHandler(handler: ToolCallHandler): void {
     this.toolCallHandler = handler;
+  }
+
+  /** 设置工具调用取消处理器（客户端断开时调用） */
+  setToolCallCancelHandler(handler: () => void): void {
+    this.toolCallCancelHandler = handler;
   }
 
   /** 获取实际绑定的端口（可能与请求端口不同） */
