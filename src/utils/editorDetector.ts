@@ -32,6 +32,19 @@ const EDITOR_CONFIG_DIRS: Record<EditorType, string> = {
   unknown: '.vscode', // 默认使用 .vscode
 };
 
+/** 编辑器匹配规则配置 */
+const EDITOR_MATCHERS: Array<{
+  type: EditorType;
+  namePatterns: string[];
+  pathPatterns: string[];
+}> = [
+  { type: 'vscode', namePatterns: ['visual studio code', 'code'], pathPatterns: ['microsoft', 'vscode'] },
+  { type: 'cursor', namePatterns: ['cursor'], pathPatterns: ['cursor'] },
+  { type: 'windsurf', namePatterns: ['windsurf'], pathPatterns: ['windsurf'] },
+  { type: 'lingma', namePatterns: ['lingma', '通义灵码'], pathPatterns: ['lingma'] },
+  { type: 'trae', namePatterns: ['trae'], pathPatterns: ['trae'] },
+];
+
 /**
  * 检测当前编辑器类型和信息
  */
@@ -39,38 +52,27 @@ export function detectEditor(): EditorInfo {
   const appName = vscode.env.appName;
   const appRoot = vscode.env.appRoot;
   const lowerAppName = appName.toLowerCase();
+  const lowerPath = appRoot.toLowerCase();
 
-  let type: EditorType = 'unknown';
-
-  // 通过 appName 判断编辑器类型
-  if (lowerAppName.includes('visual studio code') || lowerAppName === 'code') {
-    type = 'vscode';
-  } else if (lowerAppName.includes('cursor')) {
-    type = 'cursor';
-  } else if (lowerAppName.includes('windsurf')) {
-    type = 'windsurf';
-  } else if (lowerAppName.includes('lingma') || lowerAppName.includes('通义灵码')) {
-    type = 'lingma';
-  } else if (lowerAppName.includes('trae')) {
-    type = 'trae';
-  }
-
-  // 通过路径辅助判断（作为后备）
-  if (type === 'unknown') {
-    const lowerPath = appRoot.toLowerCase();
-    if (lowerPath.includes('cursor')) {
-      type = 'cursor';
-    } else if (lowerPath.includes('windsurf')) {
-      type = 'windsurf';
-    } else if (lowerPath.includes('lingma')) {
-      type = 'lingma';
-    } else if (lowerPath.includes('trae')) {
-      type = 'trae';
-    } else if (lowerPath.includes('microsoft') || lowerPath.includes('vscode')) {
-      type = 'vscode';
+  // 优先通过 appName 判断
+  for (const matcher of EDITOR_MATCHERS) {
+    if (matcher.namePatterns.some((p) => lowerAppName.includes(p))) {
+      return buildEditorInfo(matcher.type, appName, appRoot);
     }
   }
 
+  // 通过路径辅助判断（作为后备）
+  for (const matcher of EDITOR_MATCHERS) {
+    if (matcher.pathPatterns.some((p) => lowerPath.includes(p))) {
+      return buildEditorInfo(matcher.type, appName, appRoot);
+    }
+  }
+
+  return buildEditorInfo('unknown', appName, appRoot);
+}
+
+/** 构建编辑器信息对象 */
+function buildEditorInfo(type: EditorType, appName: string, appRoot: string): EditorInfo {
   return {
     type,
     appName,

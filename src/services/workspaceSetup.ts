@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { TextDecoder, TextEncoder } from 'node:util';
 import { getMcpServerKey, getMcpToolName } from '../mcpProtocol';
-import { getEditorInfo, getRulesMdUri, getMcpJsonUri, EditorType } from '../utils/editorDetector';
+import { getEditorInfo, getRulesMdUri, getMcpJsonUri } from '../utils/editorDetector';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -33,7 +33,7 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
     const toolName = getMcpToolName(port);
 
     // 尝试迁移旧文件（.github/copilot.md -> 新目录/rules.md）
-    await migrateOldFiles(folder, editorInfo.type);
+    await migrateOldFiles(folder, editorInfo.configDir);
 
     try {
       const existing = await vscode.workspace.fs.readFile(rulesUri);
@@ -62,7 +62,7 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
    * - .github/copilot.md -> {configDir}/rules.md
    * - .github/copilot-instructions.md -> {configDir}/rules.md
    */
-  async function migrateOldFiles(folder: vscode.WorkspaceFolder, editorType: EditorType): Promise<void> {
+  async function migrateOldFiles(folder: vscode.WorkspaceFolder, configDir: string): Promise<void> {
     const oldPaths = [
       ['.github', 'copilot.md'],
       ['.github', 'copilot-instructions.md'],
@@ -82,7 +82,7 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
         } catch {
           // 目标不存在，移动旧文件
           await vscode.workspace.fs.rename(oldUri, newUri, { overwrite: false });
-          log(`Migrated: ${folder.name}/${oldPath.join('/')} → ${getEditorInfo().configDir}/rules.md`);
+          log(`Migrated: ${folder.name}/${oldPath.join('/')} → ${configDir}/rules.md`);
         }
       } catch {
         // 旧文件不存在，忽略
