@@ -8,13 +8,12 @@ import * as crypto from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import { getMcpToolName } from './mcpProtocol';
 
 // ============ 常量定义 ============
 
 /** 端口重试最大次数 */
 const MAX_PORT_ATTEMPTS = 10;
-/** 基础端口 */
-const BASE_PORT = 55432;
 
 // ============ 类型定义 ============
 
@@ -26,22 +25,6 @@ export interface ToolCallParams {
 
 export type ToolCallHandler = (params: ToolCallParams) => Promise<string>;
 
-// ============ 工具函数 ============
-
-/** 根据端口计算实例编号。55433→1, 55434→2, ..., 55442→10 */
-function getMcpInstanceIndex(port: number): number {
-  const index = port - BASE_PORT;
-  if (index >= 1 && index <= 10) {
-    return index;
-  }
-  return port;
-}
-
-/** 获取 MCP 工具名 (snake_case)：copilot_super_1 ~ copilot_super_10 */
-function getMcpToolName(port: number): string {
-  return `copilot_super_${getMcpInstanceIndex(port)}`;
-}
-
 /** 检查是否为端口占用错误 */
 function isAddressInUseError(err: unknown): err is NodeJS.ErrnoException {
   return (
@@ -52,6 +35,17 @@ function isAddressInUseError(err: unknown): err is NodeJS.ErrnoException {
   );
 }
 
+/** 工具描述 */
+const TOOL_DESCRIPTION = [
+  '用户通过远程监控的方式和你对话，此 mcp 用于节点通信（电话，唯一方式），用户能够正常看到你在进行的 task 以及 response（chat面板是监控）.',
+  '',
+  '<PREREQUISITE>',
+  '✓ Executed IDE actions (禁止用终端指令写代码)',
+  '✓ Shown output to user in response，在copilot聊天窗口，输出主任务',
+  '</PREREQUISITE>',
+  '不管你是什么模型，都必须在遵守 .github/copilot.md 的前提下工作.',
+].join('\n');
+
 // ============ MCP HTTP Server ============
 
 export class McpHttpServer {
@@ -59,7 +53,6 @@ export class McpHttpServer {
   private mcpServer: McpServer | null = null;
   private transport: InstanceType<typeof StreamableHTTPServerTransport> | null = null;
   private toolCallHandler: ToolCallHandler | null = null;
-  private toolCallCancelHandler: (() => void) | null = null;
   private port: number;
   private actualPort: number = 0;
   private isRunning = false;
@@ -71,11 +64,6 @@ export class McpHttpServer {
   /** 设置工具调用处理器 */
   setToolCallHandler(handler: ToolCallHandler): void {
     this.toolCallHandler = handler;
-  }
-
-  /** 设置工具调用取消处理器（客户端断开时调用） */
-  setToolCallCancelHandler(handler: () => void): void {
-    this.toolCallCancelHandler = handler;
   }
 
   /** 获取实际绑定的端口（可能与请求端口不同） */
@@ -103,6 +91,7 @@ export class McpHttpServer {
     // 注册工具
     server.tool(
       toolName,
+      TOOL_DESCRIPTION,
       {
         title: z.string().describe('任务标题'),
         summary: z.string().optional().describe('向用户展示的对话摘要信息'),
@@ -182,29 +171,60 @@ export class McpHttpServer {
       sessionIdGenerator: () => crypto.randomUUID(),
     });
 
-    // 连接 MCP 服务器到 Transport
-    await this.mcpServer.connect(this.transport);
+    try {
+      // 连接 MCP 服务器到 Transport
+      await this.mcpServer.connect(this.transport);
 
-    // 创建 HTTP 服务器
-    this.httpServer = http.createServer(async (req, res) => {
-      await this.handleRequest(req, res);
-    });
-
-    // 设置超时 - 工具调用可能需要用户长时间输入
-    this.httpServer.timeout = 0;
-    this.httpServer.keepAliveTimeout = 0;
-
-    return new Promise<void>((resolve, reject) => {
-      this.httpServer!.listen(port, '127.0.0.1', () => {
-        this.isRunning = true;
-        resolve();
+      // 创建 HTTP 服务器
+      this.httpServer = http.createServer(async (req, res) => {
+        await this.handleRequest(req, res);
       });
 
-      this.httpServer!.on('error', (err: NodeJS.ErrnoException) => {
-        this.httpServer = null;
-        reject(err);
+      // 设置超时 - 工具调用可能需要用户长时间输入
+      this.httpServer.timeout = 0;
+      this.httpServer.keepAliveTimeout = 0;
+
+      await new Promise<void>((resolve, reject) => {
+        this.httpServer!.listen(port, '127.0.0.1', () => {
+          this.isRunning = true;
+          resolve();
+        });
+
+        this.httpServer!.on('error', (err: NodeJS.ErrnoException) => {
+          this.httpServer = null;
+          reject(err);
+        });
       });
-    });
+    } catch (error) {
+      // 清理已创建的资源
+      await this.cleanupResources();
+      throw error;
+    }
+  }
+
+  /** 清理资源 */
+  private async cleanupResources(): Promise<void> {
+    if (this.transport) {
+      try {
+        await this.transport.close();
+      } catch {
+        // 忽略关闭错误
+      }
+      this.transport = null;
+    }
+    if (this.mcpServer) {
+      try {
+        await this.mcpServer.close();
+      } catch {
+        // 忽略关闭错误
+      }
+      this.mcpServer = null;
+    }
+    if (this.httpServer) {
+      this.httpServer.closeAllConnections?.();
+      this.httpServer.close();
+      this.httpServer = null;
+    }
   }
 
   /** 处理 HTTP 请求 */
@@ -242,7 +262,16 @@ export class McpHttpServer {
       }
 
       // 使用 Transport 处理请求
-      await this.transport!.handleRequest(req, res, parsedBody);
+      if (!this.transport) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Server not ready' },
+          id: null,
+        }));
+        return;
+      }
+      await this.transport.handleRequest(req, res, parsedBody);
     } catch (error) {
       console.error('[MCP Server] Error handling request:', error);
       if (!res.headersSent) {
@@ -305,37 +334,9 @@ export class McpHttpServer {
 
   /** 停止服务器 */
   async stop(): Promise<void> {
-    if (this.transport) {
-      try {
-        await this.transport.close();
-      } catch (e) {
-        console.error('[MCP Server] Error closing transport:', e);
-      }
-      this.transport = null;
-    }
-
-    if (this.mcpServer) {
-      try {
-        await this.mcpServer.close();
-      } catch (e) {
-        console.error('[MCP Server] Error closing MCP server:', e);
-      }
-      this.mcpServer = null;
-    }
-
-    if (this.httpServer) {
-      return new Promise<void>((resolve) => {
-        this.httpServer!.close(() => {
-          this.isRunning = false;
-          this.httpServer = null;
-          console.log('[MCP Server] Stopped');
-          resolve();
-        });
-        this.httpServer!.closeAllConnections?.();
-      });
-    } else {
-      this.isRunning = false;
-    }
+    await this.cleanupResources();
+    this.isRunning = false;
+    console.log('[MCP Server] Stopped');
   }
 
   /** 当前是否运行中 */
