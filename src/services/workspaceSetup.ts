@@ -97,7 +97,17 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
         serverUrl: expectedUrl,
       };
 
-      await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      // 原子写入：先写入临时文件，再重命名（Windows 兼容：使用 copy + delete）
+      const tempPath = `${configPath}.${process.pid}.tmp`;
+      await fs.promises.writeFile(tempPath, JSON.stringify(config, null, 2), 'utf-8');
+      try {
+        // 尝试原子重命名（Unix 系统）
+        await fs.promises.rename(tempPath, configPath);
+      } catch {
+        // Windows 可能失败，使用 copy + delete
+        await fs.promises.copyFile(tempPath, configPath);
+        await fs.promises.unlink(tempPath);
+      }
       log(`Updated Windsurf MCP config: ${serverKey} → port ${port}`);
     } catch (err) {
       log(`Failed to update Windsurf MCP config: ${err}`);

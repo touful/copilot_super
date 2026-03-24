@@ -41,10 +41,12 @@ export async function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('Copilot Super');
   log('Extension activating...');
 
+  // 获取编辑器信息（缓存后复用）
+  const editorInfo = getEditorInfo();
+
   // 调试模式：显示编辑器检测信息
   const isDebug = vscode.workspace.getConfiguration('copilot-super').get<boolean>('debug', false);
   if (isDebug) {
-    const editorInfo = getEditorInfo();
     log('Editor Detection:');
     log(`  appName: ${editorInfo.appName}`);
     log(`  appRoot: ${editorInfo.appRoot}`);
@@ -56,7 +58,6 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   // Windsurf 警告：不支持多开编辑器
-  const editorInfo = getEditorInfo();
   if (editorInfo.type === 'windsurf') {
     void vscode.window.showWarningMessage(
       'Copilot Super: Windsurf 不支持多开编辑器，请确保只打开一个 Windsurf 窗口'
