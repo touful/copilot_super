@@ -135,6 +135,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       },
       saveTemplate: (template) => this.handleSaveTemplate(template),
       deleteTemplate: (id) => this.handleDeleteTemplate(id),
+      toggleTemplateLock: (id) => this.handleToggleTemplateLock(id),
       requestTemplates: () => {
         this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
       },
@@ -346,6 +347,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     void vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
     this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
     this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
+  }
+
+  /** 切换规则模板锁定状态 */
+  private handleToggleTemplateLock(id: string): void {
+    const template = this.ruleTemplates.find((item) => item.id === id);
+    if (!template) {
+      return;
+    }
+    template.locked = !template.locked;
+    writeTemplates(this.ruleTemplates);
+    this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
   }
 
   private async handleSaveWorkflow(workflow: Workflow): Promise<void> {

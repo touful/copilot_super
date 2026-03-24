@@ -8,6 +8,7 @@ export interface SidebarMessageHandlers {
   requestRules: () => void;
   saveTemplate: (template: RuleTemplate) => void;
   deleteTemplate: (id: string) => void;
+  toggleTemplateLock: (id: string) => void;
   requestTemplates: () => void;
   saveWorkflow: (workflow: Workflow) => Promise<void> | void;
   deleteWorkflow: (id: string) => Promise<void> | void;
@@ -55,6 +56,9 @@ export function createSidebarMessageHandler(handlers: SidebarMessageHandlers) {
         return;
       case 'deleteTemplate':
         handlers.deleteTemplate(msg.id);
+        return;
+      case 'toggleTemplateLock':
+        handlers.toggleTemplateLock(msg.id);
         return;
       case 'requestTemplates':
         handlers.requestTemplates();

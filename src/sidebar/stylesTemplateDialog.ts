@@ -97,6 +97,22 @@ export function getTemplateAndDialogStyles(): string {
       transform: scale(1.05);
     }
 
+    /* Lock Button */
+    .template-item.locked {
+      border-color: var(--vscode-charts-yellow, #ffcc00);
+      background: linear-gradient(135deg, var(--vscode-editor-background) 0%, color-mix(in srgb, var(--vscode-charts-yellow, #ffcc00) 5%, var(--vscode-editor-background)) 100%);
+    }
+
+    .lock-btn {
+      font-size: 16px !important;
+      min-width: 28px !important;
+    }
+
+    .lock-btn.locked {
+      opacity: 1;
+      filter: drop-shadow(0 0 2px var(--vscode-charts-yellow, #ffcc00));
+    }
+
     /* Workspace Template List */
     .workspace-template-list {
       display: flex;

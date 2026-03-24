@@ -10,6 +10,8 @@ export interface RuleTemplate {
   name: string;
   content: string;
   enabled: boolean;
+  /** 锁定状态 - 锁定的规则在所有工作区都可见 */
+  locked?: boolean;
 }
 
 export interface WorkflowStep {
@@ -41,6 +43,7 @@ export type WebviewToExtMessage =
   | { type: 'requestRules' }
   | { type: 'saveTemplate'; template: RuleTemplate }
   | { type: 'deleteTemplate'; id: string }
+  | { type: 'toggleTemplateLock'; id: string }
   | { type: 'requestTemplates' }
   | { type: 'saveWorkspaceTemplate'; templateIds: string[] }
   | { type: 'requestWorkspaceTemplate' }

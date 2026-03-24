@@ -7,7 +7,7 @@ export type BuildFullPrefixOptions = {
   ruleTemplates: RuleTemplate[];
 };
 
-/** 构建规则文本（全局规则 + 规则模板） */
+/** 构建规则文本（全局规则 + 锁定规则 + 工作区规则模板） */
 export function buildRulesText(
   globalRules: string,
   workspaceRuleTemplate: string[],
@@ -23,17 +23,28 @@ export function buildRulesText(
   // 优化：使用 Map 将 O(n*m) 查找降为 O(n)
   const templateMap = new Map(ruleTemplates.map((t) => [t.id, t]));
 
-  const orderedRules: string[] = [];
-  for (const id of workspaceRuleTemplate) {
-    const template = templateMap.get(id);
-    if (template) {
-      orderedRules.push(`${orderedRules.length + 1}. ${template.content}`);
+  // 收集锁定的规则（所有工作区都可见）
+  const lockedRules: string[] = [];
+  for (const template of ruleTemplates) {
+    if (template.locked === true) {
+      lockedRules.push(template.content);
     }
   }
 
-  if (orderedRules.length > 0) {
+  // 收集工作区选择的规则（排除已锁定的，避免重复）
+  const workspaceRules: string[] = [];
+  for (const id of workspaceRuleTemplate) {
+    const template = templateMap.get(id);
+    if (template && template.locked !== true) {
+      workspaceRules.push(template.content);
+    }
+  }
+
+  // 合并规则：锁定规则 + 工作区规则
+  const allRules = [...lockedRules, ...workspaceRules];
+  if (allRules.length > 0) {
     parts.push('[规则模板]');
-    parts.push(orderedRules.join('\n'));
+    parts.push(allRules.map((rule, index) => `${index + 1}. ${rule}`).join('\n'));
   }
 
   return parts.join('\n');

@@ -505,13 +505,15 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
     elements.templateList.innerHTML = state.templates.map((template) => {
       const preview = template.content.split('\n')[0] || template.content;
       const isInWorkspace = state.workspaceTemplateIds.includes(template.id);
-      return `<div class="template-item" draggable="true" data-template-id="${escapeHtml(template.id)}">
+      const isLocked = template.locked === true;
+      return `<div class="template-item${isLocked ? ' locked' : ''}" draggable="true" data-template-id="${escapeHtml(template.id)}">
         <span class="template-item-drag-handle">⋮⋮</span>
         <div class="template-item-info" data-template-edit="${escapeHtml(template.id)}">
-          <div class="template-item-name">${escapeHtml(template.name)}</div>
+          <div class="template-item-name">${escapeHtml(template.name)}${isLocked ? ' 🔒' : ''}</div>
           <div class="template-item-preview">${escapeHtml(preview)}</div>
         </div>
         <div class="template-item-actions">
+          <button type="button" class="lock-btn${isLocked ? ' locked' : ''}" data-template-lock="${escapeHtml(template.id)}" title="${isLocked ? '点击解锁' : '点击锁定'}">${isLocked ? '🔓' : '🔒'}</button>
           <button type="button" data-template-add="${escapeHtml(template.id)}"${isInWorkspace ? ' disabled' : ''}>${isInWorkspace ? '已添加' : '添加'}</button>
           <button type="button" data-template-edit="${escapeHtml(template.id)}">编辑</button>
           <button type="button" data-template-delete="${escapeHtml(template.id)}">删除</button>
@@ -537,6 +539,14 @@ const NEW_WORKFLOW_OPTION = '__new_workflow__';
         const id = node.dataset.templateAdd;
         if (id && !state.workspaceTemplateIds.includes(id)) {
           toggleWorkspaceTemplate(id);
+        }
+      });
+    });
+    elements.templateList.querySelectorAll<HTMLElement>('[data-template-lock]').forEach((node) => {
+      node.addEventListener('click', () => {
+        const id = node.dataset.templateLock;
+        if (id) {
+          vscode.postMessage({ type: 'toggleTemplateLock', id });
         }
       });
     });
