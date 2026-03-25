@@ -24,7 +24,7 @@ export function deleteItem<T extends { id: string }>(items: T[], id: string): T[
   return items.filter((item) => item.id !== id);
 }
 
-/** 合并预设项和自定义项（预设项优先，自定义项保留） */
+/** 合并预设项和自定义项（预设项优先，但保留已存储的用户状态如 locked/enabled） */
 export function mergeItems<T extends { id: string }>(
   storedItems: T[],
   presetItems: T[]
@@ -33,10 +33,17 @@ export function mergeItems<T extends { id: string }>(
     return storedItems;
   }
 
+  const storedMap = new Map(storedItems.map((item) => [item.id, item]));
   const presetIds = new Set(presetItems.map((item) => item.id));
   const customItems = storedItems.filter((item) => !presetIds.has(item.id));
 
-  return [...presetItems, ...customItems];
+  // 对于 ID 匹配的项，将已存储的用户状态合并到预设项上
+  const mergedPresets = presetItems.map((preset) => {
+    const stored = storedMap.get(preset.id);
+    return stored ? { ...preset, ...stored } : preset;
+  });
+
+  return [...mergedPresets, ...customItems];
 }
 
 /** 持久化数据到 VS Code 全局状态 */
