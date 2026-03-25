@@ -28,15 +28,15 @@ const MAX_PORT_ATTEMPTS = 10;
 const SSE_HEARTBEAT_INTERVAL_MS = 15_000; // 15 秒（与 v1.4.1 保持一致）
 
 /**
- * Chunked keepalive 间隔（毫秒）
+ * POST 工具调用保活间隔（毫秒）
  *
  * ⚠️ 重要：防止 undici bodyTimeout（300s）触发！
  * - VS Code Copilot 使用 undici fetch，bodyTimeout 默认 300 秒
  * - 在工具执行期间（等待用户输入），必须持续写入数据重置超时计时器
- * - 4 分钟间隔确保在 5 分钟超时前发送数据
+ * - 2 分钟间隔，与 v1.4.1 保持一致
  * - 参考: https://github.com/microsoft/vscode/issues/261734#issuecomment-3550766459
  */
-const CHUNKED_KEEPALIVE_INTERVAL_MS = 4 * 60 * 1000; // 4 分钟
+const POST_KEEPALIVE_INTERVAL_MS = 120_000; // 2 分钟（与 v1.4.1 一致）
 
 // ============ 类型定义 ============
 
@@ -481,19 +481,17 @@ export class McpHttpServer {
         }
       }
       
-      // ⚠️ 保活机制：在 handleRequest 之前启动 keepalive 定时器
+      // ⚠️ 保活机制（与 v1.4.1 一致）：在 handleRequest 之前启动 keepalive
       // 防止 undici bodyTimeout（300s）在工具执行期间触发
-      // 参考: https://github.com/microsoft/vscode/issues/261734#issuecomment-3550766459
       const keepAliveTimer = setInterval(() => {
         try {
-          if (!res.destroyed && res.headersSent && !res.writableEnded) {
-            res.write(' '); // Valid JSON whitespace, resets undici bodyTimeout
-            logger.debug('Chunked keepalive sent');
+          if (!res.destroyed) {
+            res.write(':keepalive\n\n');
           }
         } catch {
           clearInterval(keepAliveTimer);
         }
-      }, CHUNKED_KEEPALIVE_INTERVAL_MS);
+      }, POST_KEEPALIVE_INTERVAL_MS);
 
       res.on('close', () => clearInterval(keepAliveTimer));
 
