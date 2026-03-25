@@ -240,6 +240,16 @@ async function startServer(
       sidebarProvider.cancelPendingRequest();
     });
 
+    mcpServer.setConnectionStateHandler((connected) => {
+      if (connected) {
+        log('MCP connection recovered');
+        updateStatusBar(statusBarItem, 'running', mcpServer!.getActualPort());
+      } else {
+        log('MCP connection appears disconnected');
+        updateStatusBar(statusBarItem, 'disconnected');
+      }
+    });
+
     const actualPort = await mcpServer.start();
     updateStatusBar(statusBarItem, 'running', actualPort);
     log(`MCP server started on port ${actualPort}${actualPort !== port ? ` (requested ${port})` : ''}`);

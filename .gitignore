@@ -5,6 +5,9 @@ node_modules/
 dist/
 out/
 
+# 调试用临时文件
+check_html.js
+
 # 打包产物
 *.vsix
 .vscodeignore/

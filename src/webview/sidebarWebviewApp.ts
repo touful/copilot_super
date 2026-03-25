@@ -1,4 +1,12 @@
+import { parse as parseMarkdown, use as configureMarked } from 'marked';
 import type { ExtToWebviewMessage, RuleTemplate, SidebarHistoryEntry, WebviewToExtMessage, Workflow } from '../sidebar/types';
+
+// 配置 marked：转义原始 HTML，防止 XSS
+configureMarked({
+  renderer: {
+    html({ text }) { return text.replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
+  },
+});
 
 declare const acquireVsCodeApi: () => {
   postMessage(message: WebviewToExtMessage): void;
@@ -170,7 +178,7 @@ class TimerManager {
       }
       event.preventDefault();
       if (event.ctrlKey || event.metaKey) {
-        flushImmediateResponse(elements.responseInput.value);
+        flushResponse(elements.responseInput.value);
         return;
       }
       queuePendingResponse(elements.responseInput.value);
@@ -421,18 +429,7 @@ class TimerManager {
   }
 
   function flushPendingResponse(): void {
-    const text = state.pendingText?.trim();
-    if (!text) {
-      return;
-    }
-
-    appendUserMessage(text);
-    vscode.postMessage({ type: 'userResponse', text });
-    elements.responseInput.value = '';
-    cancelPendingResponse(false);
-    updateInputAssist();
-    updateStatus('ready');
-    persistState();
+    flushResponse(state.pendingText ?? '');
   }
 
   function cancelPendingResponse(notifyExtension = true): void {
@@ -514,7 +511,7 @@ class TimerManager {
 
     const body = document.createElement('div');
     body.className = 'message-body';
-    body.innerHTML = renderMarkdown(entry.content);
+    body.innerHTML = entry.role === 'copilot' ? renderMarkdown(entry.content) : renderPlainText(entry.content);
 
     item.appendChild(header);
     item.appendChild(body);
@@ -671,7 +668,7 @@ class TimerManager {
     elements.headerStatePill.textContent = '就绪';
   }
 
-  function flushImmediateResponse(rawText: string): void {
+  function flushResponse(rawText: string): void {
     const text = rawText.trim();
     if (!text) {
       return;
@@ -761,7 +758,16 @@ class TimerManager {
       return;
     }
     const id = editingTemplateId || `tpl_${Date.now()}`;
-    vscode.postMessage({ type: 'saveTemplate', template: { id, name, content, enabled: false } });
+    // 编辑已有模板时，保留原有的 locked/enabled 状态
+    const existing = editingTemplateId ? state.templates.find((t) => t.id === editingTemplateId) : null;
+    const template = {
+      id,
+      name,
+      content,
+      enabled: existing?.enabled ?? false,
+      locked: existing?.locked,
+    };
+    vscode.postMessage({ type: 'saveTemplate', template });
     closeTemplateDialog();
   }
 
@@ -1056,7 +1062,17 @@ class TimerManager {
     contextMenuText = '';
   }
 
+  /** 渲染 Markdown（Copilot 消息使用 marked 库解析） */
   function renderMarkdown(content: string): string {
+    try {
+      return parseMarkdown(content, { breaks: true }) as string;
+    } catch {
+      return escapeHtml(content).replace(/\n/g, '<br>');
+    }
+  }
+
+  /** 纯文本渲染（用户消息使用转义 + 换行） */
+  function renderPlainText(content: string): string {
     return escapeHtml(content).replace(/\n/g, '<br>');
   }
 
@@ -1087,8 +1103,16 @@ class TimerManager {
     }
   }
 
+  /** 防抖持久化：批量合并短时间内的多次 setState 调用 */
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
   function persistState(): void {
-    vscode.setState(state);
+    if (persistTimer !== null) {
+      return;
+    }
+    persistTimer = setTimeout(() => {
+      vscode.setState(state);
+      persistTimer = null;
+    }, 100);
   }
 
   function createInitialState(api: VscodeApi): SidebarState {

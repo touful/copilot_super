@@ -75,11 +75,22 @@ export class McpHttpServer {
   private port: number;
   private actualPort: number = 0;
   private isRunning = false;
-  /** 防止 recreateTransport 并发调用 */
-  private isRecreating = false;
+  /** recreateTransport 进行中的 Promise（用于防并发） */
+  private recreatePromise: Promise<void> | null = null;
+  /** MCP ping 连续失败计数 */
+  private pingFailCount = 0;
+  /** 连续失败 N 次后触发断连回调 */
+  private static readonly PING_FAIL_THRESHOLD = 3;
+  /** 连接状态变化回调 */
+  private connectionStateHandler: ((connected: boolean) => void) | null = null;
 
   constructor(port: number = 55433) {
     this.port = port;
+  }
+
+  /** 设置连接状态变化回调（ping 连续失败/恢复时触发） */
+  setConnectionStateHandler(handler: (connected: boolean) => void): void {
+    this.connectionStateHandler = handler;
   }
 
   /** 设置工具调用处理器 */
@@ -113,8 +124,18 @@ export class McpHttpServer {
         try {
           await this.mcpServer.server.ping();
           logger.debug('MCP ping sent successfully');
+          // ping 成功，若之前已断连则通知恢复
+          if (this.pingFailCount >= McpHttpServer.PING_FAIL_THRESHOLD) {
+            this.connectionStateHandler?.(true);
+          }
+          this.pingFailCount = 0;
         } catch (error) {
-          logger.debug('MCP ping failed, connection may be unstable', error);
+          this.pingFailCount++;
+          logger.debug(`MCP ping failed (${this.pingFailCount}/${McpHttpServer.PING_FAIL_THRESHOLD})`, error);
+          if (this.pingFailCount === McpHttpServer.PING_FAIL_THRESHOLD) {
+            logger.warn('MCP connection appears disconnected');
+            this.connectionStateHandler?.(false);
+          }
         }
       }
     }, 180_000);
@@ -174,15 +195,22 @@ export class McpHttpServer {
   /**
    * 重建 Transport（会话关闭后调用）
    * Windsurf 客户端可能发送 DELETE 关闭会话，需要重建 transport 支持新连接
+   * 使用 Promise 锁防止并发调用
    */
-  private async recreateTransport(): Promise<void> {
-    // 防止并发调用
-    if (this.isRecreating) {
-      logger.debug('Transport recreation already in progress, skipping');
-      return;
+  private recreateTransport(): Promise<void> {
+    if (this.recreatePromise) {
+      logger.debug('Transport recreation already in progress, reusing existing promise');
+      return this.recreatePromise;
     }
-    this.isRecreating = true;
 
+    this.recreatePromise = this.doRecreateTransport().finally(() => {
+      this.recreatePromise = null;
+    });
+
+    return this.recreatePromise;
+  }
+
+  private async doRecreateTransport(): Promise<void> {
     try {
       // 关闭旧的 mcpServer
       if (this.mcpServer) {
@@ -209,8 +237,8 @@ export class McpHttpServer {
       } catch (error) {
         logger.error('Failed to recreate transport', error);
       }
-    } finally {
-      this.isRecreating = false;
+    } catch (error) {
+      logger.error('Transport recreation failed', error);
     }
   }
 
@@ -226,7 +254,7 @@ export class McpHttpServer {
     const server = new McpServer(
       {
         name: 'copilot-super',
-        version: '2.0.2',
+        version: '2.1.0',
       }
     );
 
@@ -485,8 +513,10 @@ export class McpHttpServer {
       // 防止 undici bodyTimeout（300s）在工具执行期间触发
       const keepAliveTimer = setInterval(() => {
         try {
-          if (!res.destroyed) {
+          if (!res.destroyed && res.writable) {
             res.write(':keepalive\n\n');
+          } else {
+            clearInterval(keepAliveTimer);
           }
         } catch {
           clearInterval(keepAliveTimer);
@@ -495,9 +525,11 @@ export class McpHttpServer {
 
       res.on('close', () => clearInterval(keepAliveTimer));
 
-      await this.transport.handleRequest(req, res, parsedBody);
-
-      clearInterval(keepAliveTimer);
+      try {
+        await this.transport.handleRequest(req, res, parsedBody);
+      } finally {
+        clearInterval(keepAliveTimer);
+      }
       
       // 如果响应是 SSE 流，注册到活跃连接列表（用于 SSE 心跳保活）
       if (this.isSseResponse(res) && !res.writableEnded) {

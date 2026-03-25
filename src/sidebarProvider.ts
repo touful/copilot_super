@@ -373,6 +373,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
     template.locked = !template.locked;
     writeTemplates(this.ruleTemplates);
+    void vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
     this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
   }
 

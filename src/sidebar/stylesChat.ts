@@ -149,6 +149,7 @@ export function getChatStyles(): string {
       border: 1px solid var(--message-copilot-border);
       border-left: 3px solid var(--message-copilot-accent);
       box-shadow: var(--shadow-sm);
+      white-space: normal;
     }
 
     .message-item.copilot .message-body:hover {
@@ -403,6 +404,80 @@ export function getChatStyles(): string {
       font-size: var(--font-xs);
       color: var(--vscode-focusBorder);
       opacity: 0.8;
+    }
+
+    /* Markdown Rendering Styles (Copilot messages) */
+    .message-item.copilot .message-body p {
+      margin: 0 0 var(--spacing-sm) 0;
+    }
+    .message-item.copilot .message-body p:last-child {
+      margin-bottom: 0;
+    }
+    .message-item.copilot .message-body code {
+      background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.15));
+      padding: 1px 4px;
+      border-radius: var(--radius-xs);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.9em;
+    }
+    .message-item.copilot .message-body pre {
+      background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.15));
+      padding: var(--spacing-sm) var(--spacing-md);
+      border-radius: var(--radius);
+      overflow-x: auto;
+      margin: var(--spacing-sm) 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .message-item.copilot .message-body pre code {
+      background: none;
+      padding: 0;
+    }
+    .message-item.copilot .message-body ul,
+    .message-item.copilot .message-body ol {
+      margin: var(--spacing-sm) 0;
+      padding-left: 1.5em;
+    }
+    .message-item.copilot .message-body li {
+      margin-bottom: 2px;
+    }
+    .message-item.copilot .message-body blockquote {
+      border-left: 3px solid var(--vscode-focusBorder);
+      margin: var(--spacing-sm) 0;
+      padding: var(--spacing-xs) var(--spacing-md);
+      opacity: 0.85;
+    }
+    .message-item.copilot .message-body h1,
+    .message-item.copilot .message-body h2,
+    .message-item.copilot .message-body h3 {
+      margin: var(--spacing-sm) 0 var(--spacing-xs) 0;
+      font-weight: 600;
+    }
+    .message-item.copilot .message-body h1 { font-size: 1.3em; }
+    .message-item.copilot .message-body h2 { font-size: 1.15em; }
+    .message-item.copilot .message-body h3 { font-size: 1.05em; }
+    .message-item.copilot .message-body table {
+      border-collapse: collapse;
+      margin: var(--spacing-sm) 0;
+      width: 100%;
+      font-size: 0.9em;
+    }
+    .message-item.copilot .message-body th,
+    .message-item.copilot .message-body td {
+      border: 1px solid var(--vscode-panel-border);
+      padding: 4px 8px;
+      text-align: left;
+    }
+    .message-item.copilot .message-body th {
+      background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.1));
+      font-weight: 600;
+    }
+    .message-item.copilot .message-body a {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+    }
+    .message-item.copilot .message-body a:hover {
+      text-decoration: underline;
     }
   `);
 }

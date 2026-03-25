@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-export type StatusBarState = 'starting' | 'running' | 'error';
+export type StatusBarState = 'starting' | 'running' | 'error' | 'disconnected';
 
 export function createStatusBar(): vscode.StatusBarItem {
   const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -28,6 +28,11 @@ export function updateStatusBar(
       statusBarItem.text = '$(error) Copilot Super';
       statusBarItem.tooltip = 'MCP 服务器异常';
       statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+      break;
+    case 'disconnected':
+      statusBarItem.text = '$(debug-disconnect) Copilot Super';
+      statusBarItem.tooltip = 'MCP 连接已断开，等待重连...';
+      statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
       break;
   }
   statusBarItem.show();
