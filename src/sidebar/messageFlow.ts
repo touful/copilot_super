@@ -42,6 +42,12 @@ export function buildResolvedUserResponse(args: {
   return `${fullPrefix}\n\n[新任务]\n${text}${suffix}`;
 }
 
+/** 构建工作流后续步骤的响应文本（不含前缀和规则，仅带工具回调后缀） */
+export function buildFollowUpResponse(text: string, toolName?: string): string {
+  const suffix = toolName ? `，每次任务完成之后请调用${toolName}进行汇报。` : '';
+  return `${text}${suffix}`;
+}
+
 export function enqueueUserResponse(
   queue: QueuedResponse[],
   original: string,

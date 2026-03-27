@@ -35,6 +35,7 @@ import {
 } from './sidebar/types';
 import {
   appendUserHistory,
+  buildFollowUpResponse,
   buildResolvedUserResponse,
   enqueueUserResponse,
   removeQueuedUserHistory,
@@ -395,6 +396,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    const toolName = this.onGetToolName?.();
+    let isFirst = true;
     for (const step of workflow.steps) {
       const prompt = step.prompt.trim();
       if (!prompt) {
@@ -402,8 +405,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       }
 
       this.messageHistory = appendUserHistory(this.messageHistory, prompt);
-      const responseText = this.buildUserResponseText(prompt);
+      // 只有第一条步骤带完整前缀+规则，后续步骤仅带工具回调后缀
+      const responseText = isFirst
+        ? this.buildUserResponseText(prompt)
+        : buildFollowUpResponse(prompt, toolName);
       this.responseQueue = enqueueUserResponse(this.responseQueue, prompt, responseText);
+      isFirst = false;
     }
 
     this.saveHistory();

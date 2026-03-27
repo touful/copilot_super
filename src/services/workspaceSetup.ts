@@ -1,9 +1,7 @@
 import * as vscode from 'vscode';
 import { TextDecoder, TextEncoder } from 'node:util';
-import * as fs from 'fs';
-import * as path from 'path';
 import { getMcpServerKey, getMcpToolName } from '../mcpProtocol';
-import { getEditorInfo, getRulesMdUri, getMcpJsonUri, getWindsurfMcpConfigPath, usesGlobalMcpConfig } from '../utils/editorDetector';
+import { getEditorInfo, getRulesMdUri, getMcpJsonUri, usesGlobalMcpConfig } from '../utils/editorDetector';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -23,10 +21,8 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
       return;
     }
 
-    // Windsurf 使用全局 MCP 配置，需要单独处理
-    if (usesGlobalMcpConfig()) {
-      await ensureWindsurfMcpConfig(port);
-    }
+    // Windsurf 不再需要 MCP 配置，跳过全局 MCP 配置写入
+    // 其他编辑器仍通过工作区 mcp.json 配置
 
     for (const folder of workspaceFolders) {
       await ensureRulesFile(folder, port);
@@ -34,20 +30,6 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
       if (!usesGlobalMcpConfig()) {
         await ensureMcpJsonFile(folder, port);
       }
-    }
-  }
-
-  /** 原子写入 JSON 文件（Windows 兼容） */
-  async function writeJsonAtomically(filePath: string, data: unknown): Promise<void> {
-    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-    await fs.promises.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf-8');
-    try {
-      // 尝试原子重命名（Unix 系统）
-      await fs.promises.rename(tempPath, filePath);
-    } catch {
-      // Windows 可能失败，使用 copy + delete
-      await fs.promises.copyFile(tempPath, filePath);
-      await fs.promises.unlink(tempPath);
     }
   }
 
@@ -87,57 +69,6 @@ export function createWorkspaceSetup(options: WorkspaceSetupOptions) {
     return { modified: true, servers };
   }
 
-  /**
-   * 确保 Windsurf 全局 MCP 配置文件存在并包含正确的 copilot-super 配置
-   * Windsurf 使用 ~/.codeium/windsurf/mcp_config.json 格式
-   */
-  async function ensureWindsurfMcpConfig(port: number): Promise<void> {
-    const configPath = getWindsurfMcpConfigPath();
-    if (!configPath) {
-      return;
-    }
-
-    const serverKey = getMcpServerKey(port);
-    const expectedUrl = `http://127.0.0.1:${port}/mcp`;
-
-    try {
-      // 确保目录存在
-      const configDir = path.dirname(configPath);
-      await fs.promises.mkdir(configDir, { recursive: true });
-
-      // 读取现有配置
-      let config: { mcpServers?: Record<string, { type: string; serverUrl?: string; url?: string }> } = {};
-      try {
-        const content = await fs.promises.readFile(configPath, 'utf-8');
-        config = JSON.parse(content);
-      } catch {
-        // 文件不存在或解析失败，使用空配置
-      }
-
-      if (!config.mcpServers) {
-        config.mcpServers = {};
-      }
-
-      // 使用公共函数清理过期条目
-      const result = cleanupMcpEntries(config.mcpServers, serverKey, expectedUrl);
-      if (!result.modified && config.mcpServers[serverKey]) {
-        return;
-      }
-      config.mcpServers = result.servers;
-
-      // 更新配置
-      config.mcpServers[serverKey] = {
-        type: 'http',
-        serverUrl: expectedUrl,
-      };
-
-      // 原子写入：先写入临时文件，再重命名（Windows 兼容：使用 copy + delete）
-      await writeJsonAtomically(configPath, config);
-      log(`Updated Windsurf MCP config: ${serverKey} → port ${port}`);
-    } catch (err) {
-      log(`Failed to update Windsurf MCP config: ${err}`);
-    }
-  }
 
   async function ensureRulesFile(folder: vscode.WorkspaceFolder, port: number): Promise<void> {
     const editorInfo = getEditorInfo();
