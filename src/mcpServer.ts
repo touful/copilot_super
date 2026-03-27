@@ -254,7 +254,7 @@ export class McpHttpServer {
     const server = new McpServer(
       {
         name: 'copilot-super',
-        version: '2.1.0',
+        version: '2.1.1',
       }
     );
 
