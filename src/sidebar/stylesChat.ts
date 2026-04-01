@@ -141,20 +141,20 @@ export function getChatStyles(): string {
     }
 
     .message-body:hover {
-      transform: translateY(-1px);
+      transform: none;
     }
 
     .message-item.copilot .message-body {
-      background: var(--message-copilot-bg);
-      border: 1px solid var(--message-copilot-border);
+      background: transparent;
+      border: none;
       border-left: 3px solid var(--message-copilot-accent);
-      box-shadow: var(--shadow-sm);
+      box-shadow: none;
       white-space: normal;
+      padding: var(--spacing-sm) var(--spacing-md);
     }
 
     .message-item.copilot .message-body:hover {
-      box-shadow: var(--shadow-md);
-      border-color: color-mix(in srgb, var(--message-copilot-accent) 50%, var(--message-copilot-border));
+      box-shadow: none;
     }
 
     .message-item.user .message-body {

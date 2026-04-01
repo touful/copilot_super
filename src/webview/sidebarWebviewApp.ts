@@ -338,7 +338,7 @@ class TimerManager {
       case 'historyCleared':
         state.history = [];
         state.queueItems = [];
-        cancelPendingResponse(false);
+        cancelPendingResponse();
         renderHistory();
         renderQueueBadge();
         persistState();
@@ -391,6 +391,14 @@ class TimerManager {
       case 'queueRecalled':
         state.queueItems = state.queueItems.slice(0, message.count);
         if (message.text) {
+          // Remove the last user message from history (matches extension-side removal)
+          for (let i = state.history.length - 1; i >= 0; i--) {
+            if (state.history[i].role === 'user') {
+              state.history.splice(i, 1);
+              break;
+            }
+          }
+          renderHistory();
           elements.responseInput.value = message.text;
           elements.responseInput.focus();
         }
@@ -407,7 +415,7 @@ class TimerManager {
       return;
     }
 
-    cancelPendingResponse(false);
+    cancelPendingResponse();
     state.pendingText = text;
     state.countdownRemaining = Math.ceil(sendDelayMs / 1000);
     elements.pendingSendText.textContent = text;
@@ -432,19 +440,17 @@ class TimerManager {
     flushResponse(state.pendingText ?? '');
   }
 
-  function cancelPendingResponse(notifyExtension = true): void {
+  function cancelPendingResponse(): void {
     pendingTimerManager.clearAll();
 
-    const previous = state.pendingText;
     state.pendingText = null;
     state.countdownRemaining = 0;
     elements.pendingSendArea.classList.remove('visible');
     elements.pendingSendText.textContent = '';
     renderCountdown();
 
-    if (notifyExtension && previous) {
-      vscode.postMessage({ type: 'recallLastQueued' });
-    }
+    // Pending messages are local-only (not yet flushed to extension queue),
+    // so we must NOT send recallLastQueued here to avoid removing unrelated queued messages.
 
     updateInputAssist();
     persistState();
@@ -505,15 +511,10 @@ class TimerManager {
     const item = document.createElement('div');
     item.className = `message-item ${entry.role}`;
 
-    const header = document.createElement('div');
-    header.className = 'message-header';
-    header.textContent = entry.role === 'copilot' ? (entry.title || 'Copilot') : '你';
-
     const body = document.createElement('div');
     body.className = 'message-body';
     body.innerHTML = entry.role === 'copilot' ? renderMarkdown(entry.content) : renderPlainText(entry.content);
 
-    item.appendChild(header);
     item.appendChild(body);
     return item;
   }
@@ -673,7 +674,7 @@ class TimerManager {
     if (!text) {
       return;
     }
-    cancelPendingResponse(false);
+    cancelPendingResponse();
     appendUserMessage(text);
     vscode.postMessage({ type: 'userResponse', text });
     elements.responseInput.value = '';
