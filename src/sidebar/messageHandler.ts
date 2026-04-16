@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { RuleTemplate, WebviewToExtMessage, Workflow } from './types';
+import type { DroppedFileCandidate, RuleTemplate, WebviewToExtMessage, Workflow } from './types';
 
 export interface SidebarMessageHandlers {
   resolveUserResponse: (text: string) => void;
@@ -19,6 +19,9 @@ export interface SidebarMessageHandlers {
   recallLastQueued: () => void;
   saveWorkspaceTemplate: (templateIds: string[]) => Promise<void> | void;
   requestWorkspaceTemplate: () => void;
+  resolveDroppedFiles: (requestId: string, candidates: DroppedFileCandidate[]) => void;
+  attachFiles: () => void;
+  debugLog: (message: string) => void;
   ready: () => void;
 }
 
@@ -89,6 +92,15 @@ export function createSidebarMessageHandler(handlers: SidebarMessageHandlers) {
         return;
       case 'requestWorkspaceTemplate':
         handlers.requestWorkspaceTemplate();
+        return;
+      case 'resolveDroppedFiles':
+        handlers.resolveDroppedFiles(msg.requestId, msg.candidates || []);
+        return;
+      case 'attachFiles':
+        handlers.attachFiles();
+        return;
+      case 'debugLog':
+        handlers.debugLog(msg.message);
         return;
       case 'ready':
         handlers.ready();

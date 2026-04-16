@@ -5,8 +5,11 @@
 
 import * as vscode from 'vscode';
 
+export const LOG_PREFIX = 'copilot-super';
+
 /** 日志级别 */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'none';
+type EmittedLogLevel = Exclude<LogLevel, 'none'>;
 
 /** 日志级别优先级 */
 const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
@@ -16,6 +19,40 @@ const LOG_LEVEL_PRIORITY: Record<LogLevel, number> = {
   error: 3,
   none: 4,
 };
+
+export function formatLogLine(scope: string, message: string, level: EmittedLogLevel = 'info'): string {
+  const timestamp = new Date().toISOString();
+  const levelText = ` [${level.toUpperCase()}]`;
+  const scopeText = scope ? ` [${scope}]` : '';
+  const prefix = `${LOG_PREFIX}${scopeText}${levelText} [${timestamp}]`;
+  const lines = message.split(/\r?\n/);
+  return lines.map((line) => `${prefix} ${line}`).join('\n');
+}
+
+function formatLogValue(value: unknown): string {
+  if (value instanceof Error) {
+    return value.stack || value.message;
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (value === undefined) {
+    return 'undefined';
+  }
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? String(value) : json;
+  } catch {
+    return String(value);
+  }
+}
+
+function joinLogParts(message: string, args: unknown[]): string {
+  if (args.length === 0) {
+    return message;
+  }
+  return [message, ...args.map((arg) => formatLogValue(arg))].join(' ');
+}
 
 /**
  * 创建带前缀的日志器
@@ -30,25 +67,26 @@ export function createLogger(prefix: string, getMinLevel: () => LogLevel) {
   return {
     debug: (message: string, ...args: unknown[]) => {
       if (shouldLog('debug')) {
-        console.log(`[${prefix}] [DEBUG] ${message}`, ...args);
+        console.log(formatLogLine(prefix, joinLogParts(message, args), 'debug'));
       }
     },
     info: (message: string, ...args: unknown[]) => {
       if (shouldLog('info')) {
-        console.log(`[${prefix}] ${message}`, ...args);
+        console.log(formatLogLine(prefix, joinLogParts(message, args), 'info'));
       }
     },
     warn: (message: string, ...args: unknown[]) => {
       if (shouldLog('warn')) {
-        console.warn(`[${prefix}] ${message}`, ...args);
+        console.warn(formatLogLine(prefix, joinLogParts(message, args), 'warn'));
       }
     },
     error: (message: string, err?: unknown) => {
       if (shouldLog('error')) {
         if (err !== undefined) {
-          console.error(`[${prefix}] ${message}:`, formatError(err));
+          const separator = message.endsWith(':') ? '' : ':';
+          console.error(formatLogLine(prefix, joinLogParts(`${message}${separator}`, [err]), 'error'));
         } else {
-          console.error(`[${prefix}] ${message}`);
+          console.error(formatLogLine(prefix, message, 'error'));
         }
       }
     },

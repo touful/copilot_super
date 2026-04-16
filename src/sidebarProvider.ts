@@ -26,6 +26,7 @@ import { deleteTemplate, persistWorkspaceTemplateIds } from './sidebar/templateW
 import { deleteWorkflow, getDefaultWorkflows, mergeWorkflowsFromPrompt, persistWorkflows, saveWorkflow } from './sidebar/workflowStore';
 import {
   type ExtToWebviewMessage,
+  type DroppedFileCandidate,
   type PendingRequest,
   type RuleTemplate,
   type SidebarHistoryEntry,
@@ -85,7 +86,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly context: vscode.ExtensionContext
+    private readonly context: vscode.ExtensionContext,
+    private readonly log: (message: string) => void = () => undefined
   ) {
     // 从持久化存储加载对话历史
     this.messageHistory = context.workspaceState.get('copilot-super.history', []);
@@ -163,7 +165,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       requestWorkspaceTemplate: () => {
         this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
       },
+      resolveDroppedFiles: (requestId, candidates) => {
+        this.resolveDroppedFiles(requestId, candidates);
+      },
+      attachFiles: () => {
+        void this.handleAttachFiles();
+      },
+      debugLog: (message) => {
+        this.log(`Webview: ${message}`);
+      },
       ready: () => {
+        this.log('Webview ready');
         syncSidebarReadyState({
           syncHistory: () => this.syncHistory(),
           syncRules: () => this.postMessage({ type: 'syncRules', globalRules: this.globalRules }),
@@ -366,13 +378,19 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'syncWorkspaceTemplate', templateIds: this.workspaceRuleTemplate });
   }
 
-  /** 切换规则模板锁定状态 */
+  /** 切换规则模板锁定状态（不可变更新） */
   private handleToggleTemplateLock(id: string): void {
-    const template = this.ruleTemplates.find((item) => item.id === id);
-    if (!template) {
+    const index = this.ruleTemplates.findIndex((item) => item.id === id);
+    if (index < 0) {
       return;
     }
-    template.locked = !template.locked;
+    const template = this.ruleTemplates[index];
+    const updated = { ...template, locked: !template.locked };
+    this.ruleTemplates = [
+      ...this.ruleTemplates.slice(0, index),
+      updated,
+      ...this.ruleTemplates.slice(index + 1),
+    ];
     writeTemplates(this.ruleTemplates);
     void vscode.commands.executeCommand('copilot-super.refreshWorkspaceFiles');
     this.postMessage({ type: 'syncTemplates', templates: this.ruleTemplates });
@@ -447,6 +465,224 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       type: 'syncQueue',
       ...buildQueueSyncPayload(this.responseQueue),
     });
+  }
+
+  private resolveDroppedFiles(requestId: string, candidates: DroppedFileCandidate[]): void {
+    // 限制候选数量，防止恶意或异常的大量候选值
+    const MAX_CANDIDATES = 100;
+    const safeCandidates = candidates.slice(0, MAX_CANDIDATES);
+    this.log(`Resolving dropped files: candidates=${safeCandidates.length}${candidates.length > MAX_CANDIDATES ? ` (truncated from ${candidates.length})` : ''}, values=${safeCandidates.map((c) => c.value).join(', ')}`);
+
+    const fileRefs = this.uniqueFileRefs(
+      safeCandidates
+        .map((candidate) => this.resolveDroppedFileCandidate(candidate))
+        .filter((value): value is string => Boolean(value))
+    );
+
+    this.log(`Resolved dropped files: candidates=${safeCandidates.length}, refs=${fileRefs.length}, result=${fileRefs.join(', ')}`);
+    this.postMessage({
+      type: 'resolvedDroppedFiles',
+      requestId,
+      fileRefs,
+    });
+  }
+
+  /** 通过 VS Code 原生文件选择对话框附加文件 */
+  private async handleAttachFiles(): Promise<void> {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: true,
+      title: '选择要引用的文件',
+      openLabel: '引用文件',
+    });
+
+    if (!uris || uris.length === 0) {
+      return;
+    }
+
+    const fileRefs = this.uniqueFileRefs(
+      uris
+        .map((uri) => this.toFileReference(uri))
+        .filter((value): value is string => Boolean(value))
+    );
+
+    this.log(`Attached files via dialog: count=${fileRefs.length}, refs=${fileRefs.join(', ')}`);
+
+    if (fileRefs.length > 0) {
+      this.postMessage({
+        type: 'attachedFiles',
+        fileRefs,
+      });
+    }
+  }
+
+  private resolveDroppedFileCandidate(candidate: DroppedFileCandidate): string | null {
+    const value = this.cleanDroppedFileValue(candidate.value);
+    if (!value) {
+      return null;
+    }
+
+    const uri = this.parseDroppedUri(value);
+    if (uri) {
+      return this.toFileReference(uri, candidate.trustedName);
+    }
+
+    return this.toFileReference(value, candidate.trustedName);
+  }
+
+  private cleanDroppedFileValue(value: string): string {
+    const cleaned = value
+      .trim()
+      .replace(/^['"]|['"]$/g, '')
+      .replace(/\0/g, '')
+      .replace(/\r/g, '');
+    // Extract embedded file / vscode-remote / vscode-resource URIs
+    const embeddedUri = /(?:file|vscode-remote|vscode-resource):\/\/[^\s"'<>]+/i.exec(cleaned);
+    return embeddedUri?.[0] || cleaned;
+  }
+
+  private parseDroppedUri(value: string): vscode.Uri | null {
+    if (/^[a-zA-Z]:[\\/]/.test(value)) {
+      return null;
+    }
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) {
+      return null;
+    }
+    try {
+      const uri = vscode.Uri.parse(value, true);
+      // Accept known file-related schemes
+      const knownSchemes = ['file', 'vscode-remote', 'vscode-resource', 'vscode-userdata'];
+      if (knownSchemes.includes(uri.scheme)) {
+        return uri;
+      }
+      // For unknown schemes, still return if it has a meaningful path
+      if (uri.path && uri.path !== '/') {
+        return uri;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private toFileReference(uriOrPath: vscode.Uri | string, trustedName = false): string | null {
+    if (typeof uriOrPath !== 'string') {
+      const workspaceRelative = this.toWorkspaceRelativePath(uriOrPath);
+      if (workspaceRelative) {
+        return this.normalizeFileReference(workspaceRelative);
+      }
+
+      const filePath = uriOrPath.scheme === 'file' ? uriOrPath.fsPath : uriOrPath.path;
+      return this.normalizeFileReference(path.basename(filePath));
+    }
+
+    const value = uriOrPath.trim();
+    if (!value) {
+      return null;
+    }
+
+    const absolutePath = this.toAbsolutePathCandidate(value);
+    if (absolutePath) {
+      const workspaceRelative = this.toWorkspaceRelativePath(absolutePath);
+      if (workspaceRelative) {
+        return this.normalizeFileReference(workspaceRelative);
+      }
+      return this.normalizeFileReference(path.basename(absolutePath));
+    }
+
+    if (trustedName || this.looksLikeDroppedFileReference(value)) {
+      return this.normalizeFileReference(value);
+    }
+
+    return null;
+  }
+
+  private toAbsolutePathCandidate(value: string): string | null {
+    const normalized = value.replace(/^\/([a-zA-Z]:[\\/])/, '$1');
+    if (path.isAbsolute(normalized)) {
+      return normalized;
+    }
+    return null;
+  }
+
+  private toWorkspaceRelativePath(uri: vscode.Uri): string | null;
+  private toWorkspaceRelativePath(filePath: string): string | null;
+  private toWorkspaceRelativePath(uriOrPath: vscode.Uri | string): string | null {
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+    if (workspaceFolders.length === 0) {
+      return null;
+    }
+
+    if (typeof uriOrPath !== 'string') {
+      const folder = vscode.workspace.getWorkspaceFolder(uriOrPath);
+      if (!folder) {
+        return null;
+      }
+      if (uriOrPath.scheme === 'file' && folder.uri.scheme === 'file') {
+        return path.relative(folder.uri.fsPath, uriOrPath.fsPath);
+      }
+      return path.posix.relative(folder.uri.path, uriOrPath.path);
+    }
+
+    const resolvedPath = path.resolve(uriOrPath);
+    for (const folder of workspaceFolders) {
+      if (folder.uri.scheme !== 'file') {
+        continue;
+      }
+      const rootPath = path.resolve(folder.uri.fsPath);
+      const relativePath = path.relative(rootPath, resolvedPath);
+      if (!relativePath || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))) {
+        return relativePath || path.basename(resolvedPath);
+      }
+    }
+
+    return null;
+  }
+
+  private looksLikeDroppedFileReference(value: string): boolean {
+    if (!value || value === '.' || value === '..') {
+      return false;
+    }
+    if (/[\\/]/.test(value)) {
+      return true;
+    }
+    return /^[^<>:"|?*\\/]+(?:\.[^<>:"|?*\\/.\s]+)+$/.test(value)
+      || /^(?:dockerfile|makefile|readme|license)$/i.test(value);
+  }
+
+  private normalizeFileReference(value: string): string | null {
+    let normalized = value.trim();
+    if (!normalized || normalized === '.' || normalized === '..') {
+      return null;
+    }
+
+    // Normalize all path separators to forward slashes for consistent display
+    normalized = normalized
+      .replace(/\\/g, '/')
+      .replace(/^\.?\/+/, '');
+
+    // Percent-decode common encoded characters (space, CJK, etc.)
+    try {
+      normalized = decodeURIComponent(normalized);
+    } catch {
+      // If decoding fails, keep the original
+    }
+
+    return normalized || null;
+  }
+
+  private uniqueFileRefs(fileRefs: string[]): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const fileRef of fileRefs) {
+      if (seen.has(fileRef)) {
+        continue;
+      }
+      seen.add(fileRef);
+      result.push(fileRef);
+    }
+    return result;
   }
 
   /** 撤回队列中最后一条未发送的消息，返回原始文本给 Webview */
@@ -545,22 +781,36 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         <div class="pending-send-title"><span role="img" aria-hidden="true">⏱️</span> 即将发送</div>
         <div class="pending-countdown" id="pendingCountdown">5秒</div>
       </div>
-      <div class="pending-send-text" id="pendingSendText"></div>
+      <textarea
+        class="pending-send-text"
+        id="pendingSendText"
+        aria-label="编辑待发送消息"
+        spellcheck="false"
+      ></textarea>
       <div class="pending-actions">
         <button class="pending-send-btn" id="pendingSendNowBtn">立即发送</button>
         <button class="pending-cancel-btn" id="pendingCancelBtn">撤回</button>
       </div>
     </div>
 
-    <div class="input-area">
+    <div class="input-area" id="inputArea">
+      <div class="file-drop-overlay" id="fileDropOverlay" aria-hidden="true">
+        <div class="file-drop-overlay-icon">📂</div>
+        <div class="file-drop-overlay-text">拖拽文件到此处引用</div>
+        <div class="file-drop-overlay-hint">也可复制文件路径后粘贴到输入框</div>
+      </div>
       <div class="input-wrapper">
-        <textarea
-          class="input-field"
-          id="inputField"
-          placeholder="输入你的指令..."
-          rows="1"
-          aria-label="消息输入框"
-        ></textarea>
+        <div class="input-field-shell" id="inputFieldShell">
+          <div class="input-highlight" id="inputHighlight" aria-hidden="true"></div>
+          <textarea
+            class="input-field"
+            id="inputField"
+            placeholder="输入你的指令..."
+            rows="3"
+            aria-label="消息输入框"
+            spellcheck="false"
+          ></textarea>
+        </div>
         <button class="send-btn" id="sendBtn" disabled aria-label="发送消息">发送</button>
       </div>
       <div class="hint-text">Enter 发送 · Ctrl+Enter 直发 · Shift+Enter 换行 <span class="char-count" id="charCount"></span></div>

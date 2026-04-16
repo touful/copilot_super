@@ -1,4 +1,5 @@
 import type { ToolCallParams } from '../mcpServer';
+import { normalizeEscapedDisplayText } from './textNormalization';
 
 export interface PendingRequest {
   resolve: (value: string) => void;
@@ -33,6 +34,11 @@ export type SidebarHistoryEntry = {
   timestamp: number;
 };
 
+export type DroppedFileCandidate = {
+  value: string;
+  trustedName?: boolean;
+};
+
 export type WebviewToExtMessage =
   | { type: 'userResponse'; text: string }
   | { type: 'choiceSelected'; choice: string }
@@ -55,6 +61,9 @@ export type WebviewToExtMessage =
   | { type: 'confirmRunWorkflow'; id: string }
   | { type: 'requestQueueInfo' }
   | { type: 'recallLastQueued' }
+  | { type: 'resolveDroppedFiles'; requestId: string; candidates: DroppedFileCandidate[] }
+  | { type: 'attachFiles' }
+  | { type: 'debugLog'; message: string }
   | { type: 'ready' };
 
 export type ExtToWebviewMessage =
@@ -72,7 +81,9 @@ export type ExtToWebviewMessage =
   | { type: 'workflowRunQueued'; workflowName: string; stepCount: number }
   | { type: 'playSound' }
   | { type: 'syncQueue'; count: number; items: string[] }
-  | { type: 'queueRecalled'; text: string | null; count: number };
+  | { type: 'queueRecalled'; text: string | null; count: number }
+  | { type: 'resolvedDroppedFiles'; requestId: string; fileRefs: string[] }
+  | { type: 'attachedFiles'; fileRefs: string[] };
 
 export type SidebarToolCallViewModel = {
   title: string;
@@ -82,9 +93,9 @@ export type SidebarToolCallViewModel = {
 
 export function normalizeToolCallParams(params: ToolCallParams): SidebarToolCallViewModel {
   return {
-    title: params.title || '来自 Copilot',
-    summary: params.summary || '',
-    choices: params.choices || [],
+    title: normalizeEscapedDisplayText(params.title || '来自 Copilot'),
+    summary: normalizeEscapedDisplayText(params.summary || ''),
+    choices: (params.choices || []).map((choice) => normalizeEscapedDisplayText(choice)),
   };
 }
 

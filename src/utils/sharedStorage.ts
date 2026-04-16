@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
+import { z } from 'zod';
 import type { RuleTemplate, Workflow } from '../sidebar/types';
 import { createModuleLogger, formatError } from './logger';
 
@@ -30,6 +31,32 @@ interface GlobalRulesData {
   updatedAt?: string;
 }
 
+// ============ Zod Schemas ============
+
+const ruleTemplateSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  content: z.string(),
+  enabled: z.boolean().optional().default(false),
+  locked: z.boolean().optional(),
+});
+
+const workflowStepSchema = z.object({
+  id: z.string(),
+  prompt: z.string(),
+});
+
+const workflowSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  steps: z.array(workflowStepSchema),
+});
+
+const globalRulesDataSchema = z.object({
+  rules: z.string(),
+  updatedAt: z.string().optional(),
+});
+
 /** 获取共享存储目录路径 */
 function getSharedDir(): string {
   return path.join(os.homedir(), SHARED_DIR_NAME);
@@ -43,15 +70,22 @@ function ensureSharedDir(): void {
   }
 }
 
-/** 读取 JSON 文件 */
-function readJsonFile<T>(filename: string, defaultValue: T): T {
+/** 读取 JSON 文件（带可选 schema 验证） */
+function readJsonFile<T>(filename: string, defaultValue: T, schema?: z.ZodType<T>): T {
   const filePath = path.join(getSharedDir(), filename);
   try {
     if (fs.existsSync(filePath)) {
       const content = fs.readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(content);
-      // 验证解析结果是有效类型
       if (parsed === null || parsed === undefined) {
+        return defaultValue;
+      }
+      if (schema) {
+        const result = schema.safeParse(parsed);
+        if (result.success) {
+          return result.data;
+        }
+        logger.warn(`Schema validation failed for ${filename}: ${result.error.message}`);
         return defaultValue;
       }
       return parsed as T;
@@ -248,9 +282,9 @@ function mergeDataById<T extends { id: string }>(existing: T[], incoming: T[]): 
   return Array.from(map.values());
 }
 
-/** 读取规则模板 */
+/** 读取规则模板（带 schema 验证） */
 export function readTemplates(): RuleTemplate[] {
-  return readJsonFile<RuleTemplate[]>(FILES.templates, []);
+  return readJsonFile<RuleTemplate[]>(FILES.templates, [], z.array(ruleTemplateSchema));
 }
 
 /** 写入规则模板 */
@@ -258,9 +292,9 @@ export function writeTemplates(templates: RuleTemplate[]): void {
   writeJsonFile(FILES.templates, templates);
 }
 
-/** 读取工作流 */
+/** 读取工作流（带 schema 验证） */
 export function readWorkflows(): Workflow[] {
-  return readJsonFile<Workflow[]>(FILES.workflows, []);
+  return readJsonFile<Workflow[]>(FILES.workflows, [], z.array(workflowSchema));
 }
 
 /** 写入工作流 */
@@ -268,9 +302,9 @@ export function writeWorkflows(workflows: Workflow[]): void {
   writeJsonFile(FILES.workflows, workflows);
 }
 
-/** 读取全局规则 */
+/** 读取全局规则（带 schema 验证） */
 export function readGlobalRules(): string {
-  const data = readJsonFile<GlobalRulesData>(FILES.globalRules, { rules: '' });
+  const data = readJsonFile<GlobalRulesData>(FILES.globalRules, { rules: '' }, globalRulesDataSchema);
   return data.rules;
 }
 

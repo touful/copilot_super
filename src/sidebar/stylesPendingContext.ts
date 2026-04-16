@@ -62,7 +62,7 @@ export function getPendingAndContextMenuStyles(): string {
       display: flex;
     }
 
-    .pending-send-area.visible::after {
+    .pending-send-area.visible.counting::after {
       animation: pendingProgress 5s linear forwards;
     }
 
@@ -102,6 +102,8 @@ export function getPendingAndContextMenuStyles(): string {
     }
 
     .pending-send-text {
+      width: 100%;
+      min-height: 58px;
       font-size: var(--font-sm);
       color: var(--vscode-foreground);
       opacity: 0.85;
@@ -109,10 +111,20 @@ export function getPendingAndContextMenuStyles(): string {
       background: var(--vscode-textCodeBlock-background);
       border-radius: var(--radius-sm);
       word-break: break-word;
-      max-height: 60px;
+      max-height: 120px;
       overflow-y: auto;
       line-height: 1.5;
       border: 1px solid var(--vscode-panel-border);
+      outline: none;
+      resize: vertical;
+      font-family: var(--vscode-font-family);
+      transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+    }
+
+    .pending-send-text:focus {
+      border-color: var(--vscode-focusBorder);
+      box-shadow: var(--shadow-focus);
+      opacity: 1;
     }
 
     .pending-actions {
@@ -165,6 +177,13 @@ export function getPendingAndContextMenuStyles(): string {
 
     .pending-cancel-btn:active {
       transform: translateY(0);
+    }
+
+    .pending-send-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
     }
 
     /* Context Menu - Enhanced */

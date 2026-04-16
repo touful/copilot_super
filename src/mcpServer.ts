@@ -53,13 +53,20 @@ const logger = createModuleLogger('MCP Server');
 
 /** 工具描述 */
 const TOOL_DESCRIPTION = [
-  '用户通过远程监控的方式和你对话，此 mcp 用于节点通信（电话，唯一方式），用户能够正常看到你在进行的 task 以及 response（chat面板是监控）.',
+  '你正在一个隔离环境中工作。用户不在你身边，无法直接与你交互。',
   '',
-  '<PREREQUISITE>',
-  '✓ Executed IDE actions (禁止用终端指令写代码)',
-  '✓ Shown output to user in response，在copilot聊天窗口，输出主任务',
-  '</PREREQUISITE>',
-  '不管你是什么模型，都必须在遵守 .github/copilot.md 的前提下工作.',
+  '此工具是你与用户之间唯一的通信通道。',
+  '用户的 chat 面板仅用于单向监控你的 task 和 response，但用户无法通过 chat 面板向你传达任何信息。',
+  '如果你需要向用户汇报结果、请求确认、索要信息或通知完成——你必须调用此工具，没有第二种方式。',
+  '',
+  '不调用此工具 = 用户收不到你的任何消息 = 任务失败。',
+  '',
+  '规则：',
+  '1. 每个任务完成后，必须调用此工具向用户汇报结果。',
+  '2. 遇到需要用户决策或信息的阻塞点时，必须立即调用此工具。',
+  '3. 所有代码修改必须通过 IDE action 执行，禁止使用终端命令编写代码。',
+  '4. response 中应包含当前任务的摘要和关键结果，使用户通过监控面板即可掌握进度。',
+  '5. 始终遵守 .vscode/rules.md 中的规则。',
 ].join('\n');
 
 // ============ MCP HTTP Server ============

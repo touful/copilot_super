@@ -7,7 +7,63 @@ export function getInputAndTabStyles(): string {
       padding: var(--spacing-md);
       border-top: 1px solid var(--vscode-panel-border);
       flex-shrink: 0;
+      position: relative;
       background: color-mix(in srgb, var(--vscode-sideBar-background) 98%, var(--vscode-focusBorder) 2%);
+      transition: background var(--transition-fast), box-shadow var(--transition-fast);
+    }
+
+    .input-area.file-drop-active {
+      background: color-mix(in srgb, var(--vscode-focusBorder) 10%, var(--vscode-sideBar-background));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
+    }
+
+    /* File Drop Overlay */
+    .file-drop-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 50;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border-radius: var(--radius-lg);
+      border: 2px dashed var(--vscode-focusBorder);
+      background: color-mix(in srgb, var(--vscode-focusBorder) 12%, var(--vscode-sideBar-background) 88%);
+      pointer-events: none;
+      animation: dropOverlayFadeIn 0.15s ease-out;
+    }
+
+    .file-drop-overlay.visible {
+      display: flex;
+    }
+
+    @keyframes dropOverlayFadeIn {
+      from { opacity: 0; transform: scale(0.97); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    .file-drop-overlay-icon {
+      font-size: 28px;
+      opacity: 0.85;
+      animation: dropOverlayBounce 0.6s ease-in-out infinite alternate;
+    }
+
+    @keyframes dropOverlayBounce {
+      from { transform: translateY(0); }
+      to { transform: translateY(-4px); }
+    }
+
+    .file-drop-overlay-text {
+      font-size: var(--font-md);
+      font-weight: 600;
+      color: var(--vscode-focusBorder);
+    }
+
+    .file-drop-overlay-hint {
+      font-size: var(--font-xs);
+      opacity: 0.6;
+      color: var(--vscode-descriptionForeground);
     }
 
     /* Input Wrapper */
@@ -18,27 +74,93 @@ export function getInputAndTabStyles(): string {
     }
 
     /* Input Field */
-    .input-field {
+    .input-field-shell {
       flex: 1;
-      padding: 10px var(--spacing-md);
+      min-width: 0;
+      position: relative;
       border: 1px solid var(--vscode-input-border);
       border-radius: var(--radius-lg);
       background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
-      font-family: var(--vscode-font-family);
-      font-size: var(--vscode-font-size);
-      resize: vertical;
-      min-height: 40px;
-      max-height: 120px;
-      line-height: 1.5;
-      outline: none;
-      transition: all var(--transition-fast);
+      min-height: 72px;
+      height: 72px;
+      max-height: 180px;
+      overflow: hidden;
+      transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
       box-shadow: var(--shadow-sm);
     }
 
-    .input-field:focus {
+    .input-field-shell:focus-within {
       border-color: var(--vscode-focusBorder);
       box-shadow: var(--shadow-focus), var(--shadow-md);
+    }
+
+    .input-field-shell.file-drop-active,
+    .input-area.file-drop-active .input-field-shell {
+      border-color: var(--vscode-focusBorder);
+      background: color-mix(in srgb, var(--vscode-focusBorder) 8%, var(--vscode-input-background));
+      box-shadow: var(--shadow-focus), var(--shadow-md);
+    }
+
+    .input-highlight,
+    .input-field {
+      width: 100%;
+      min-height: 72px;
+      height: 72px;
+      max-height: 180px;
+      padding: 10px var(--spacing-md);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .input-highlight {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      height: 100%;
+      max-height: none;
+      color: var(--vscode-input-foreground);
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .input-highlight .file-mention {
+      display: inline;
+      padding: 0;
+      border: none;
+      border-radius: 3px;
+      background: color-mix(in srgb, var(--vscode-textLink-foreground, var(--vscode-focusBorder)) 18%, transparent);
+      color: var(--vscode-textLink-foreground, var(--vscode-focusBorder));
+      font: inherit;
+      font-weight: inherit;
+      letter-spacing: inherit;
+      line-height: inherit;
+      white-space: inherit;
+      text-decoration: none;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+
+    .input-highlight .file-mention-at {
+      opacity: 0.75;
+      font: inherit;
+      font-weight: inherit;
+    }
+
+    .input-field {
+      position: relative;
+      z-index: 2;
+      display: block;
+      border: none;
+      background: transparent;
+      color: transparent;
+      caret-color: var(--vscode-input-foreground);
+      resize: none;
+      overflow-y: hidden;
+      outline: none;
+      box-shadow: none;
     }
 
     .input-field::placeholder {
